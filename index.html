@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Just Listening</title>
+  <meta name="description" content="Player de músicas locais com playlists, repetição e timer para dormir. Funciona offline no iPhone e no Android.">
+  <meta name="theme-color" content="#0b0b0f">
+  <meta name="color-scheme" content="dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Just Listening">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="top">
+      <div class="top-row">
+        <div class="brand"><span class="brand-dot"></span>Just Listening</div>
+        <div class="top-actions">
+          <button id="btnInfo" class="icon-btn" aria-label="Sobre e instalação"></button>
+          <button id="btnImport" class="pill"></button>
+        </div>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button data-tab="library" role="tab">Músicas</button>
+        <button data-tab="playlists" role="tab">Playlists</button>
+      </nav>
+    </header>
+    <div id="banner"></div>
+    <main id="view"></main>
+  </div>
+
+  <div id="mini" class="mini" hidden>
+    <button class="mini-open" id="miniOpen" aria-label="Abrir player">
+      <div class="cover-slot" id="miniCover"></div>
+      <div class="mini-text">
+        <div class="t" id="miniTitle"></div>
+        <div class="s" id="miniSub"></div>
+      </div>
+    </button>
+    <button class="icon-btn" id="miniPlay" aria-label="Tocar"></button>
+    <button class="icon-btn" id="miniNext" aria-label="Próxima"></button>
+    <div class="mini-progress"><div id="miniBar"></div></div>
+  </div>
+
+  <section id="player" class="player" aria-label="Player">
+    <div class="player-glow" id="playerGlow"></div>
+    <div class="player-inner">
+      <div class="player-top">
+        <button class="icon-btn" id="plClose" aria-label="Fechar player"></button>
+        <div class="player-src"><span>Tocando de</span><b id="plSource"></b></div>
+        <button class="icon-btn" id="plMore" aria-label="Opções"></button>
+      </div>
+      <div class="player-cover" id="plCover"></div>
+      <div class="player-meta">
+        <div class="pl-title" id="plTitle"></div>
+        <div class="pl-artist" id="plArtist"></div>
+      </div>
+      <div class="seek">
+        <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="Posição da música">
+        <div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
+      </div>
+      <div class="controls">
+        <button id="btnShuffle" class="icon-btn toggle" aria-label="Aleatório"></button>
+        <button id="btnPrev" class="icon-btn big" aria-label="Anterior"></button>
+        <button id="btnPlay" class="play-btn" aria-label="Tocar"></button>
+        <button id="btnNext" class="icon-btn big" aria-label="Próxima"></button>
+        <button id="btnRepeat" class="icon-btn toggle" aria-label="Repetir"></button>
+      </div>
+      <div class="player-bottom">
+        <button id="btnTimer" class="chip"><span id="timerIcon"></span><span id="timerLabel">Timer</span></button>
+        <span id="repeatLabel" class="hint"></span>
+      </div>
+    </div>
+  </section>
+
+  <div id="sheetRoot"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <input type="file" id="fileInput" class="vh" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus" multiple>
+  <input type="file" id="coverInput" class="vh" accept="image/*">
+  <audio id="audio" preload="auto" playsinline></audio>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
