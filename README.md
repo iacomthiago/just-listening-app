@@ -15,7 +15,18 @@ Ideal para ouvir as músicas que você gera e baixa (por exemplo, do Suno) com r
 - Timer para dormir (15 min a 2 h, tempo personalizado ou "quando esta música acabar") com volume diminuindo aos poucos no final
 - Editar nome, artista e capa de cada música
 - Controles na tela bloqueada e na central de controle
-- Funciona offline: as músicas ficam guardadas só no aparelho, nada é enviado para a internet
+- Funciona offline: as músicas ficam guardadas no aparelho
+- Sincronização opcional com o Dropbox: coloque músicas na pasta do app pelo computador e elas aparecem sozinhas no celular e no tablet (subpastas viram playlists)
+
+## Sincronizar com o Dropbox
+
+1. No app, toque em **ⓘ → Conectar Dropbox** e autorize. No app instalado na Tela de Início, o Dropbox mostra um código: copie e cole no app.
+2. Coloque músicas (de preferência MP3) em **Dropbox › Aplicativos › Just Listening Thiago**. Subpastas viram playlists com o mesmo nome.
+3. O app sincroniza ao abrir, ao voltar para ele e no botão de nuvem no topo. Músicas importadas direto no aparelho também são enviadas para o Dropbox (dá para desligar no ⓘ).
+
+Excluir uma música no app não apaga a cópia no Dropbox, e ela não é baixada de novo.
+
+> Para usar o código em outro projeto: crie seu próprio app em <https://www.dropbox.com/developers/apps> (Scoped access → App folder, permissões `files.content.read`/`files.content.write`, PKCE permitido, Redirect URI com o endereço do seu site) e troque `APP_KEY` em `dropbox.js`.
 
 ## Como instalar
 
@@ -62,7 +73,7 @@ Depois abra <http://localhost:5173>.
 
 ## Próximos passos (ideias)
 
-- Sincronizar com a nuvem (Google Drive, Dropbox ou OneDrive) para não precisar importar em cada aparelho
+- Sincronizar também as playlists criadas no app entre os aparelhos
 - Fila de reprodução editável
 - Exportar/importar playlists
 
@@ -75,5 +86,6 @@ Depois abra <http://localhost:5173>.
 | `app.js` | Player, playlists, timer, importação |
 | `db.js` | Armazenamento local (IndexedDB) |
 | `id3.js` | Leitura de nome/artista/capa dos MP3 |
+| `dropbox.js` | Login e acesso à pasta do app no Dropbox |
 | `sw.js` | Funcionamento offline |
 | `manifest.webmanifest` | Nome, ícone e cores do app instalado |

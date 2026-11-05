@@ -1,8 +1,9 @@
 // Just Listening — player de músicas locais (PWA)
 import * as db from './db.js';
 import { readTags } from './id3.js';
+import * as dbx from './dropbox.js';
 
-const VERSION = '1.0.1';
+const VERSION = '1.1.0';
 
 // ---------------------------------------------------------------- utilidades
 const $ = (s, r = document) => r.querySelector(s);
@@ -57,6 +58,7 @@ const I = {
   check: stroke('<path d="M20 6 9 17l-5-5"/>'),
   updown: stroke('<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>'),
   goto: stroke('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>'),
+  cloud: stroke('<path d="M7 18.5h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.5 9.6 4.5 4.5 0 0 0 7 18.5z"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5M12 11v5"/>'),
 };
 
 // ---------------------------------------------------------------- estado
@@ -551,6 +553,32 @@ function pickFiles(pid = null) {
   inp.value = '';
   inp.click();
 }
+// Guarda um arquivo de áudio no aparelho e devolve a música criada.
+async function addTrackFromFile(f, addedAt, extra = {}) {
+  const type = (f.type && f.type.startsWith('audio/') ? f.type : '') || MIME[extOf(f.name)] || 'audio/mpeg';
+  const tags = await readTags(f).catch(() => ({}));
+  const data = await f.arrayBuffer();
+  const cover = tags.picture ? await shrinkImage(tags.picture) : null;
+  const duration = await probeDuration(f);
+  const id = uid();
+  const t = {
+    id,
+    title: (tags.title || stripExt(f.name) || 'Sem nome').trim(),
+    artist: (tags.artist || '').trim(),
+    duration,
+    cover,
+    fileName: f.name,
+    size: f.size,
+    type,
+    addedAt,
+    ...extra,
+  };
+  await db.put('audio', { type, data }, id);
+  await db.put('tracks', t);
+  state.tracks.set(id, t);
+  return t;
+}
+
 async function importFiles(files, pid) {
   files = files.filter(isAudioFile).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { numeric: true }));
   if (!files.length) { toast('Nenhum arquivo de áudio encontrado'); return; }
@@ -567,28 +595,9 @@ async function importFiles(files, pid) {
     const key = `${f.name}|${f.size}`;
     if (existing.has(key)) { skipped++; ids.push(existing.get(key)); continue; }
     try {
-      const type = f.type || MIME[extOf(f.name)] || 'audio/mpeg';
-      const tags = await readTags(f).catch(() => ({}));
-      const data = await f.arrayBuffer();
-      const cover = tags.picture ? await shrinkImage(tags.picture) : null;
-      const duration = await probeDuration(f);
-      const id = uid();
-      const t = {
-        id,
-        title: (tags.title || stripExt(f.name) || 'Sem nome').trim(),
-        artist: (tags.artist || '').trim(),
-        duration,
-        cover,
-        fileName: f.name,
-        size: f.size,
-        type,
-        addedAt: base + (files.length - i),
-      };
-      await db.put('audio', { type, data }, id);
-      await db.put('tracks', t);
-      state.tracks.set(id, t);
-      existing.set(key, id);
-      ids.push(id);
+      const t = await addTrackFromFile(f, base + (files.length - i));
+      existing.set(key, t.id);
+      ids.push(t.id);
       added++;
     } catch (err) {
       console.error('importar', f.name, err);
@@ -612,10 +621,214 @@ async function importFiles(files, pid) {
   if (skipped) parts.push(plural(skipped, 'já existia', 'já existiam'));
   if (failed) parts.push(plural(failed, 'falhou', 'falharam'));
   toast((parts.join(' · ') || 'Nada importado') + (p ? ` → ${p.name}` : ''));
+  if (added && dbx.isConnected() && syncPrefs.upload) setTimeout(() => syncNow(true), 2800);
+}
+
+// ---------------------------------------------------------------- Dropbox
+// Sincronização aditiva: músicas novas no Dropbox são baixadas; músicas novas neste
+// aparelho são enviadas (se a opção estiver ligada). Subpastas do Dropbox viram playlists.
+// Excluir no app não apaga no Dropbox.
+const SYNC_KEY = 'just-listening-sync';
+const syncPrefs = (() => { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch { return {}; } })();
+if (syncPrefs.upload === undefined) syncPrefs.upload = true;
+if (!Array.isArray(syncPrefs.ignored)) syncPrefs.ignored = [];
+const saveSyncPrefs = () => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(syncPrefs)); } catch { /* ignore */ } };
+let syncing = false;
+let syncAgain = false;
+
+async function addToFolderPlaylist(folder, trackId) {
+  let p = state.playlists.find((x) => x.dropboxFolder === folder) || state.playlists.find((x) => x.name === folder);
+  if (!p) {
+    p = { id: uid(), name: folder, trackIds: [], createdAt: Date.now(), dropboxFolder: folder };
+    state.playlists.push(p);
+  }
+  if (!p.trackIds.includes(trackId)) p.trackIds.push(trackId);
+  await db.put('playlists', p);
+}
+
+async function syncNow(quiet = false) {
+  if (!dbx.isConnected()) return;
+  if (syncing || importing) { syncAgain = true; return; }
+  if (!navigator.onLine) { if (!quiet) toast('Sem internet para sincronizar'); return; }
+  syncing = true;
+  renderSyncButton();
+  let down = 0, up = 0, failed = 0, full = false, shown = false;
+  const progress = (msg) => { shown = true; toast(msg, true); };
+  try {
+    if (!quiet) progress('Dropbox: verificando…');
+    const files = (await dbx.listFiles()).filter((f) => AUDIO_EXT.test(f.name));
+    const ignored = new Set(syncPrefs.ignored);
+    const byRemote = new Map();
+    const byKey = new Map();
+    for (const t of state.tracks.values()) {
+      if (t.remote?.id) byRemote.set(t.remote.id, t);
+      else byKey.set(`${t.fileName}|${t.size}`, t);
+    }
+    const toDownload = [];
+    for (const f of files) {
+      if (byRemote.has(f.id) || ignored.has(f.id)) continue;
+      const key = `${f.name}|${f.size}`;
+      const local = byKey.get(key);
+      if (local) { // mesma música já existe aqui: só liga as duas
+        local.remote = { id: f.id, path: f.path_display };
+        byKey.delete(key);
+        byRemote.set(f.id, local);
+        await db.put('tracks', local);
+        continue;
+      }
+      toDownload.push(f);
+    }
+    toDownload.sort((a, b) => a.path_display.localeCompare(b.path_display, 'pt-BR', { numeric: true }));
+
+    const base = Date.now();
+    for (let i = 0; i < toDownload.length; i++) {
+      const f = toDownload[i];
+      progress(`Dropbox: baixando ${i + 1} de ${toDownload.length}…`);
+      try {
+        const data = await dbx.download(f.id);
+        const file = new File([data], f.name, { type: MIME[extOf(f.name)] || 'audio/mpeg' });
+        const t = await addTrackFromFile(file, base + (toDownload.length - i), { remote: { id: f.id, path: f.path_display } });
+        const folder = f.path_display.split('/').slice(1, -1).join(' / ');
+        if (folder) await addToFolderPlaylist(folder, t.id);
+        down++;
+      } catch (err) {
+        console.error('dropbox download', f.path_display, err);
+        failed++;
+        if (err && err.name === 'QuotaExceededError') { full = true; break; }
+      }
+    }
+
+    if (syncPrefs.upload) {
+      const pending = [...state.tracks.values()].filter((t) => !t.remote?.id).sort((a, b) => a.addedAt - b.addedAt);
+      for (let i = 0; i < pending.length; i++) {
+        const t = pending[i];
+        if (t.size > 140 * 1048576) continue; // limite do envio simples
+        progress(`Dropbox: enviando ${i + 1} de ${pending.length}…`);
+        try {
+          const rec = await db.get('audio', t.id);
+          if (!rec) continue;
+          const name = (t.fileName || `${t.title}.${extOf(t.fileName || '') || 'mp3'}`).replace(/[\\/:*?"<>|]/g, '_').trim();
+          const meta = await dbx.upload(`/${name}`, rec.data);
+          t.remote = { id: meta.id, path: meta.path_display };
+          await db.put('tracks', t);
+          up++;
+        } catch (err) {
+          console.error('dropbox upload', t.fileName, err);
+          failed++;
+          if (err && /insufficient_space/.test(err.body || '')) { toast('Seu Dropbox está cheio'); shown = false; break; }
+        }
+      }
+    }
+
+    syncPrefs.last = Date.now();
+    saveSyncPrefs();
+    if (down) { syncQueue(); render(); }
+    const parts = [];
+    if (down) parts.push(`${down} ${down === 1 ? 'música baixada' : 'músicas baixadas'}`);
+    if (up) parts.push(`${up} ${up === 1 ? 'enviada' : 'enviadas'}`);
+    if (failed) parts.push(`${failed} com erro`);
+    if (full) parts.push('sem espaço no aparelho');
+    if (parts.length) toast(`Dropbox: ${parts.join(' · ')}`);
+    else if (!quiet) toast('Dropbox: tudo sincronizado');
+    else if (shown) hideToast();
+  } catch (err) {
+    console.error('dropbox sync', err);
+    if (!dbx.isConnected()) toast('O acesso ao Dropbox expirou. Conecte de novo no botão ⓘ.');
+    else if (!quiet) toast('Não consegui sincronizar com o Dropbox');
+    else if (shown) hideToast();
+  } finally {
+    syncing = false;
+    renderSyncButton();
+    if (syncAgain) { syncAgain = false; setTimeout(() => syncNow(true), 800); }
+  }
+}
+
+function renderSyncButton() {
+  const b = $('#btnSync');
+  if (!b) return;
+  b.hidden = !dbx.isConnected();
+  b.classList.toggle('busy', syncing);
+  b.setAttribute('aria-label', syncing ? 'Sincronizando com o Dropbox' : 'Sincronizar com o Dropbox');
+}
+
+// No app instalado (tela de início), o Dropbox mostra um código para colar:
+// voltar sozinho para o app instalado não é confiável no iPhone.
+async function connectDropbox(ready) {
+  const useRedirect = !isStandalone();
+  try { await ready; } catch { toast('Este navegador não permite conectar ao Dropbox'); return; }
+  let url;
+  try { url = dbx.authorizeUrl(useRedirect); } catch { await dbx.prepareAuth(); url = dbx.authorizeUrl(useRedirect); }
+  if (useRedirect) { location.href = url; return; }
+  window.open(url, '_blank');
+  askDropboxCode();
+}
+async function askDropboxCode() {
+  const code = await promptSheet({
+    title: 'Cole o código do Dropbox',
+    text: 'No Dropbox, toque em “Permitir”. Ele vai mostrar um código: copie, volte aqui e cole abaixo.',
+    placeholder: 'Código de acesso',
+    ok: 'Conectar',
+    maxlength: 200,
+  });
+  if (!code) return;
+  try {
+    toast('Conectando ao Dropbox…', true);
+    await dbx.finishAuth(code);
+    toast('Dropbox conectado!');
+    renderSyncButton();
+    syncNow(false);
+  } catch (err) {
+    console.error(err);
+    toast('Código inválido ou expirado. Tente conectar de novo.');
+  }
+}
+async function handleDropboxReturn() {
+  const p = new URLSearchParams(location.search);
+  if (!p.has('code') && !p.has('error')) return false;
+  history.replaceState(null, '', location.pathname);
+  if (p.has('error')) { toast('Conexão com o Dropbox cancelada'); return false; }
+  try {
+    toast('Conectando ao Dropbox…', true);
+    await dbx.finishAuth(p.get('code'), p.get('state'));
+    toast('Dropbox conectado!');
+    return true;
+  } catch (err) {
+    console.error(err);
+    toast('Não consegui conectar ao Dropbox');
+    return false;
+  }
+}
+function dropboxBlockHTML() {
+  if (!dbx.isConnected()) {
+    return `<div class="info-block"><h4>Sincronizar com o Dropbox</h4>
+      <p>Coloque músicas na pasta do app no Dropbox (pelo computador, por exemplo) e elas aparecem sozinhas no celular e no tablet. Subpastas viram playlists.</p>
+      <div class="sheet-buttons start"><button class="pill" id="dbxConnect">Conectar Dropbox</button>${dbx.hasPendingAuth() && isStandalone() ? '<button class="pill ghost" id="dbxCode">Já tenho o código</button>' : ''}</div></div>`;
+  }
+  const a = dbx.account();
+  const last = syncPrefs.last ? new Date(syncPrefs.last).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : 'nunca';
+  return `<div class="info-block"><h4>Dropbox conectado</h4>
+    ${a ? `<p>${esc(a.name)}${a.email ? ` · ${esc(a.email)}` : ''}</p>` : ''}
+    <p class="note">Pasta: Dropbox › Aplicativos › Just Listening Thiago<br>Última sincronização: ${last}</p>
+    <label class="switch-row"><span>Enviar as músicas deste aparelho para o Dropbox</span><input type="checkbox" class="switch" id="dbxUpload" ${syncPrefs.upload ? 'checked' : ''}></label>
+    <div class="sheet-buttons start"><button class="pill" id="dbxSync">Sincronizar agora</button><button class="pill ghost" id="dbxOff">Desconectar</button></div></div>`;
+}
+function bindDropboxBlock(s, ready) {
+  s.querySelector('#dbxConnect')?.addEventListener('click', () => { closeSheet(); connectDropbox(ready); });
+  s.querySelector('#dbxCode')?.addEventListener('click', () => { closeSheet(); askDropboxCode(); });
+  s.querySelector('#dbxSync')?.addEventListener('click', () => { closeSheet(); syncNow(false); });
+  s.querySelector('#dbxUpload')?.addEventListener('change', (e) => { syncPrefs.upload = e.target.checked; saveSyncPrefs(); });
+  s.querySelector('#dbxOff')?.addEventListener('click', async () => {
+    if (!(await confirmSheet({ title: 'Desconectar o Dropbox?', text: 'As músicas continuam neste aparelho e no Dropbox. Só a sincronização para.', ok: 'Desconectar' }))) return;
+    await dbx.disconnect();
+    renderSyncButton();
+    toast('Dropbox desconectado');
+  });
 }
 
 // ---------------------------------------------------------------- edição
 async function deleteTrack(id) {
+  const remoteId = state.tracks.get(id)?.remote?.id;
+  if (remoteId && !syncPrefs.ignored.includes(remoteId)) { syncPrefs.ignored.push(remoteId); saveSyncPrefs(); }
   const wasCurrent = id === state.currentId;
   if (wasCurrent) {
     audio.pause();
@@ -719,12 +932,12 @@ function actionSheet(titleHTML, items) {
     (s) => s.querySelectorAll('[data-i]').forEach((b) => b.addEventListener('click', () => { closeSheet(); items[+b.dataset.i].run(); })),
   );
 }
-function promptSheet({ title, value = '', placeholder = '', ok = 'Salvar', type = 'text' }) {
+function promptSheet({ title, text = '', value = '', placeholder = '', ok = 'Salvar', type = 'text', maxlength = 80 }) {
   return new Promise((resolve) => {
     openSheet(
-      `<h3>${esc(title)}</h3>
+      `<h3>${esc(title)}</h3>${text ? `<p style="margin:-6px 0 12px">${esc(text)}</p>` : ''}
       <form class="prompt">
-        <input name="v" type="${type}" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off" enterkeyhint="done" ${type === 'number' ? 'inputmode="numeric" min="1" max="1440"' : 'maxlength="80"'}>
+        <input name="v" type="${type}" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" ${type === 'number' ? 'inputmode="numeric" min="1" max="1440"' : `maxlength="${maxlength}"`}>
         <div class="sheet-buttons"><button type="button" class="pill ghost" data-close>Cancelar</button><button class="pill" type="submit">${esc(ok)}</button></div>
       </form>`,
       (s) => {
@@ -762,7 +975,8 @@ function trackMenu(id, src) {
   items.push({
     label: 'Excluir do app', icon: I.trash, danger: true,
     run: async () => {
-      if (await confirmSheet({ title: 'Excluir música?', text: `“${t.title}” será apagada deste aparelho e de todas as playlists.`, ok: 'Excluir', danger: true })) deleteTrack(id);
+      const text = `“${t.title}” será apagada deste aparelho e de todas as playlists.${t.remote?.id ? ' A cópia no Dropbox continua lá.' : ''}`;
+      if (await confirmSheet({ title: 'Excluir música?', text, ok: 'Excluir', danger: true })) deleteTrack(id);
     },
   });
   actionSheet(`${coverHTML(t, 'sm')}<div><div class="t">${esc(t.title)}</div><div class="s">${esc(t.artist || fmt(t.duration))}</div></div>`, items);
@@ -911,6 +1125,8 @@ function timerSheet() {
 }
 let installEvent = null;
 async function infoSheet() {
+  const ready = dbx.isConnected() ? null : dbx.prepareAuth();
+  if (ready) ready.catch(() => {});
   let storage = '';
   try {
     const est = await navigator.storage?.estimate?.();
@@ -924,12 +1140,14 @@ async function infoSheet() {
   const tracks = state.tracks.size;
   openSheet(
     `<h3>Just Listening</h3>
+     ${dropboxBlockHTML()}
      ${installEvent ? '<div class="info-block"><h4>Instalar o app</h4><p>Coloque o Just Listening na tela inicial deste aparelho.</p><div class="sheet-buttons" style="justify-content:flex-start;margin-top:10px"><button class="pill" id="doInstall">Instalar</button></div></div>' : ''}
      <div class="info-block"><h4>Instalar no iPhone</h4><ol><li>Abra este site no Safari.</li><li>Toque em Compartilhar (quadrado com seta).</li><li>Escolha “Adicionar à Tela de Início”.</li><li>Abra pelo ícone e importe as músicas lá.</li></ol></div>
      <div class="info-block"><h4>Instalar no Android</h4><ol><li>Abra este site no Chrome.</li><li>Toque no menu ⋮.</li><li>Escolha “Instalar app” ou “Adicionar à tela inicial”.</li></ol></div>
      ${storage}
-     <div class="info-block"><p>${plural(tracks, 'música guardada', 'músicas guardadas')} · ${plural(state.playlists.length, 'playlist', 'playlists')}. Suas músicas ficam só neste aparelho: nada é enviado para a internet.</p><p class="note">Versão ${VERSION}</p></div>`,
+     <div class="info-block"><p>${plural(tracks, 'música guardada', 'músicas guardadas')} · ${plural(state.playlists.length, 'playlist', 'playlists')}. ${dbx.isConnected() ? 'As músicas ficam guardadas neste aparelho e são sincronizadas só com a sua pasta do Dropbox.' : 'Suas músicas ficam só neste aparelho: nada é enviado para a internet.'}</p><p class="note">Versão ${VERSION}</p></div>`,
     (s) => {
+      bindDropboxBlock(s, ready);
       s.querySelector('#doInstall')?.addEventListener('click', async () => {
         closeSheet();
         try { installEvent.prompt(); await installEvent.userChoice; } catch { /* ignore */ }
@@ -1135,6 +1353,10 @@ function playerMenu() {
 
 // ---------------------------------------------------------------- toast
 let toastTimer;
+function hideToast() {
+  clearTimeout(toastTimer);
+  $('#toast').classList.remove('show');
+}
 function toast(msg, sticky = false) {
   const el = $('#toast');
   el.textContent = msg;
@@ -1146,6 +1368,8 @@ function toast(msg, sticky = false) {
 // ---------------------------------------------------------------- eventos
 function bindEvents() {
   $('#btnInfo').innerHTML = I.info;
+  $('#btnSync').innerHTML = I.cloud;
+  $('#btnSync').addEventListener('click', () => syncNow(false));
   $('#btnImport').innerHTML = `${I.upload}<span>Importar</span>`;
   $('#plClose').innerHTML = I.down;
   $('#plMore').innerHTML = I.more;
@@ -1273,7 +1497,13 @@ function bindEvents() {
   });
 
   setInterval(tickTimer, 500);
-  document.addEventListener('visibilitychange', () => { tickTimer(); if (document.hidden) saveState(); });
+  document.addEventListener('visibilitychange', () => {
+    tickTimer();
+    if (document.hidden) { saveState(); return; }
+    // ao voltar para o app, busca músicas novas no Dropbox (no máximo a cada 5 min)
+    if (dbx.isConnected() && Date.now() - (syncPrefs.last || 0) > 5 * 60000) syncNow(true);
+  });
+  window.addEventListener('online', () => { if (dbx.isConnected()) syncNow(true); });
   window.addEventListener('pagehide', saveState);
 
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; renderBanner(); });
@@ -1306,6 +1536,9 @@ async function init() {
   renderBanner();
   render();
   renderNow();
+  const justConnected = await handleDropboxReturn();
+  renderSyncButton();
+  if (dbx.isConnected()) setTimeout(() => syncNow(!justConnected), justConnected ? 300 : 1500);
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     // Quando uma versão nova do app é instalada, recarrega (só se nada estiver tocando).

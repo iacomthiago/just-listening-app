@@ -1,6 +1,6 @@
 // Service worker: guarda o app no aparelho para funcionar sem internet.
 // Ao publicar uma versão nova, aumente o número em CACHE.
-const CACHE = 'just-listening-v2';
+const CACHE = 'just-listening-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const ASSETS = [
   './app.js',
   './db.js',
   './id3.js',
+  './dropbox.js',
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',
