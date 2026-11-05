@@ -1,6 +1,6 @@
 // Service worker: guarda o app no aparelho para funcionar sem internet.
 // Ao publicar uma versão nova, aumente o número em CACHE.
-const CACHE = 'just-listening-v3';
+const CACHE = 'just-listening-v4';
 const ASSETS = [
   './',
   './index.html',

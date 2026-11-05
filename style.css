@@ -68,6 +68,23 @@ body.has-mini #app { padding-bottom: calc(104px + var(--safe-b)); }
 @keyframes pulse { 0%, 100% { opacity: 1; transform: translateY(0); } 50% { opacity: .35; transform: translateY(-2px); } }
 .sheet-buttons.start { justify-content: flex-start; flex-wrap: wrap; margin-top: 12px; }
 
+/* ---------- busca e ordem ---------- */
+.lib-tools { display: flex; gap: 8px; margin: 0 0 10px; }
+.search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border-radius: 12px; background: var(--surface); color: var(--muted); cursor: text; }
+.search svg { width: 18px; height: 18px; }
+.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 16px; -webkit-appearance: none; appearance: none; }
+.search input::placeholder { color: var(--faint); }
+.search:focus-within { box-shadow: 0 0 0 1px var(--accent); }
+#libSort {
+  height: 40px; padding: 0 30px 0 12px; border-radius: 12px; border: 0; background: var(--surface); color: var(--text);
+  font: inherit; font-size: 16px; -webkit-appearance: none; appearance: none; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 18px, calc(100% - 11px) 18px; background-size: 5px 5px; background-repeat: no-repeat;
+}
+.all-cover { background: var(--accent-soft); color: var(--accent); }
+.all-cover svg { position: absolute; left: 27%; top: 27%; width: 46%; height: 46%; }
+.list .empty.small { list-style: none; }
+
 /* ---------- listas ---------- */
 .list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px 0 6px; flex-wrap: wrap; }
 .count { color: var(--muted); font-size: 13px; }

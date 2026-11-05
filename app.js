@@ -3,7 +3,7 @@ import * as db from './db.js';
 import { readTags } from './id3.js';
 import * as dbx from './dropbox.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 // ---------------------------------------------------------------- utilidades
 const $ = (s, r = document) => r.querySelector(s);
@@ -58,6 +58,7 @@ const I = {
   check: stroke('<path d="M20 6 9 17l-5-5"/>'),
   updown: stroke('<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>'),
   goto: stroke('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>'),
+  search: stroke('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
   cloud: stroke('<path d="M7 18.5h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.5 9.6 4.5 4.5 0 0 0 7 18.5z"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5M12 11v5"/>'),
 };
 
@@ -77,7 +78,9 @@ const volumeWorks = (() => { try { const a = document.createElement('audio'); a.
 const state = {
   tracks: new Map(),
   playlists: [],
-  view: { name: 'library' }, // library | playlists | playlist (id, reorder)
+  view: { name: 'playlists' }, // library | playlists | playlist (id, reorder)
+  sort: 'recent', // recent | az | za
+  query: '',
   q: { source: 'library', ids: [], order: [], pos: -1 },
   currentId: null,
   repeat: 'off', // off | all | one
@@ -90,7 +93,7 @@ let fadeFactor = 1;
 function saveState() {
   try {
     localStorage.setItem(LS_KEY, JSON.stringify({
-      repeat: state.repeat, shuffle: state.shuffle, fade: state.fade,
+      repeat: state.repeat, shuffle: state.shuffle, fade: state.fade, sort: state.sort,
       source: state.q.source, currentId: state.currentId, time: isSilent() ? 0 : audio.currentTime || 0,
     }));
   } catch { /* armazenamento indisponível */ }
@@ -109,7 +112,14 @@ async function loadData() {
     if (clean.length !== p.trackIds.length) { p.trackIds = clean; db.put('playlists', p); }
   }
 }
-const libraryIds = () => [...state.tracks.values()].sort((a, b) => b.addedAt - a.addedAt).map((t) => t.id);
+const collator = new Intl.Collator('pt-BR', { sensitivity: 'base', numeric: true });
+function libraryIds() {
+  const arr = [...state.tracks.values()];
+  if (state.sort === 'az') arr.sort((a, b) => collator.compare(a.title, b.title));
+  else if (state.sort === 'za') arr.sort((a, b) => collator.compare(b.title, a.title));
+  else arr.sort((a, b) => b.addedAt - a.addedAt);
+  return arr.map((t) => t.id);
+}
 const playlistById = (id) => state.playlists.find((p) => p.id === id);
 function sourceIds(src) {
   if (src === 'library') return libraryIds();
@@ -1185,9 +1195,34 @@ function trackRow(t, src) {
     <button class="icon-btn" data-act="more" aria-label="Opções de ${esc(t.title)}">${I.more}</button>
   </li>`;
 }
+const normalize = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+function filteredLibraryIds() {
+  const q = normalize(state.query).trim();
+  const ids = libraryIds();
+  if (!q) return ids;
+  return ids.filter((id) => {
+    const t = state.tracks.get(id);
+    return normalize(`${t.title} ${t.artist || ''} ${t.fileName || ''}`).includes(q);
+  });
+}
+// Atualiza só a lista (e não a busca), para não fechar o teclado enquanto digita.
+function renderLibraryList() {
+  const list = $('#libList');
+  if (!list) return;
+  const all = libraryIds();
+  const ids = filteredLibraryIds();
+  const total = all.reduce((s, id) => s + (state.tracks.get(id).duration || 0), 0);
+  $('#libCount').textContent = state.query.trim()
+    ? `${ids.length} de ${plural(all.length, 'música', 'músicas')}`
+    : `${plural(all.length, 'música', 'músicas')}${total ? ' · ' + fmtLong(total) : ''}`;
+  list.innerHTML = ids.length
+    ? ids.map((id) => trackRow(state.tracks.get(id), 'library')).join('')
+    : '<li class="empty small"><p>Nenhuma música encontrada.</p></li>';
+}
 function renderLibrary() {
   const ids = libraryIds();
   const view = $('#view');
+  if (ids.length && $('#libSearch')) { renderLibraryList(); return; }
   if (!ids.length) {
     view.innerHTML = `<div class="empty">
       <div class="empty-art">${I.note}</div>
@@ -1198,12 +1233,20 @@ function renderLibrary() {
     </div>`;
     return;
   }
-  const total = ids.reduce((s, id) => s + (state.tracks.get(id).duration || 0), 0);
-  view.innerHTML = `<div class="list-head">
-      <div class="count">${plural(ids.length, 'música', 'músicas')}${total ? ' · ' + fmtLong(total) : ''}</div>
+  view.innerHTML = `<div class="lib-tools">
+      <label class="search">${I.search}<input id="libSearch" type="search" placeholder="Buscar música" value="${esc(state.query)}" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="search"></label>
+      <select id="libSort" aria-label="Ordenar músicas">
+        <option value="recent" ${state.sort === 'recent' ? 'selected' : ''}>Recentes</option>
+        <option value="az" ${state.sort === 'az' ? 'selected' : ''}>A–Z</option>
+        <option value="za" ${state.sort === 'za' ? 'selected' : ''}>Z–A</option>
+      </select>
+    </div>
+    <div class="list-head">
+      <div class="count" id="libCount"></div>
       <div class="head-actions"><button class="pill ghost" data-act="shuffleAll">${I.shuffle} Aleatório</button><button class="pill" data-act="playAll">${I.play} Tocar</button></div>
     </div>
-    <ul class="list">${ids.map((id) => trackRow(state.tracks.get(id), 'library')).join('')}</ul>`;
+    <ul class="list" id="libList"></ul>`;
+  renderLibraryList();
 }
 function renderPlaylists() {
   const view = $('#view');
@@ -1217,11 +1260,18 @@ function renderPlaylists() {
       <button class="icon-btn" data-act="playlistMore" aria-label="Opções da playlist">${I.more}</button>
     </li>`;
   }).join('');
+  const all = libraryIds();
+  const allDur = all.reduce((s, id) => s + (state.tracks.get(id).duration || 0), 0);
+  const allRow = all.length ? `<li class="row" data-pid="__all">
+      <button class="row-main" data-act="openLibrary"><div class="cover sm all-cover">${I.note}</div><div class="row-text"><div class="t">Todas as músicas</div><div class="s">${plural(all.length, 'música', 'músicas')}${allDur ? ' · ' + fmtLong(allDur) : ''}</div></div>${state.q.source === 'library' && state.currentId ? eqHTML() : ''}</button>
+      <span class="icon-btn" aria-hidden="true">${I.goto}</span>
+    </li>` : '';
   view.innerHTML = `<div class="list-head">
       <div class="count">${plural(state.playlists.length, 'playlist', 'playlists')}</div>
       <button class="pill" data-act="newPlaylist">${I.plus} Nova playlist</button>
     </div>
-    ${rows ? `<ul class="list">${rows}</ul>` : '<div class="empty small"><p>Crie playlists para organizar suas músicas. Por exemplo, uma só para dormir, com repetição ligada.</p></div>'}`;
+    <ul class="list">${allRow}${rows}</ul>
+    ${rows ? '' : '<div class="empty small"><p>Crie playlists para organizar suas músicas. Por exemplo, uma só para dormir, com repetição ligada. Se usar o Dropbox, cada subpasta vira uma playlist.</p></div>'}`;
 }
 function renderPlaylist(pid) {
   const p = playlistById(pid);
@@ -1387,6 +1437,18 @@ function bindEvents() {
     if (files.length) importFiles(files, importTarget);
   });
 
+  $('#view').addEventListener('input', (e) => {
+    if (e.target.id !== 'libSearch') return;
+    state.query = e.target.value;
+    renderLibraryList();
+  });
+  $('#view').addEventListener('change', (e) => {
+    if (e.target.id !== 'libSort') return;
+    state.sort = e.target.value;
+    if (state.q.source === 'library') syncQueue();
+    renderLibraryList();
+    saveState();
+  });
   $('#view').addEventListener('click', (e) => {
     const b = e.target.closest('[data-act]');
     if (!b || b.disabled) return;
@@ -1401,6 +1463,7 @@ function bindEvents() {
       case 'import': pickFiles(); break;
       case 'newPlaylist': newPlaylist(); break;
       case 'openPlaylist': setView({ name: 'playlist', id: pid }); break;
+      case 'openLibrary': setView({ name: 'library' }); break;
       case 'playlistMore': playlistMenu(pid); break;
       case 'playlistMenu': playlistMenu(state.view.id); break;
       case 'back': setView({ name: 'playlists' }); break;
@@ -1525,6 +1588,9 @@ async function init() {
   state.repeat = ['off', 'all', 'one'].includes(s.repeat) ? s.repeat : 'off';
   state.shuffle = !!s.shuffle;
   state.fade = s.fade !== false;
+  state.sort = ['recent', 'az', 'za'].includes(s.sort) ? s.sort : 'recent';
+  // Abre nas playlists; sem nenhuma música ainda, abre na tela de importar.
+  state.view = { name: state.tracks.size ? 'playlists' : 'library' };
   state.q.source = s.source && sourceIds(s.source) ? s.source : 'library';
   if (s.currentId && state.tracks.has(s.currentId)) {
     state.currentId = s.currentId;
