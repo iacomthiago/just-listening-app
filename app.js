@@ -2,7 +2,7 @@
 import * as db from './db.js';
 import { readTags } from './id3.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 
 // ---------------------------------------------------------------- utilidades
 const $ = (s, r = document) => r.querySelector(s);
@@ -60,7 +60,12 @@ const I = {
 };
 
 // ---------------------------------------------------------------- estado
-const audio = $('#audio');
+// Dois <audio>: a próxima música começa no segundo player um instante antes da atual
+// acabar. Assim o iPhone não desliga o som entre uma faixa e outra com a tela bloqueada.
+const players = [$('#audio'), $('#audio2')];
+let audio = players[0];
+const spare = () => (audio === players[0] ? players[1] : players[0]);
+const unlockedEls = new Set();
 const LS_KEY = 'just-listening-state';
 const isIOS = /iP(hone|od|ad)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const isStandalone = () => window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
@@ -219,16 +224,30 @@ const SILENT_URL = (() => {
   for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);
   return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
 })();
-let unlocked = false;
-const isSilent = () => audio.src === SILENT_URL;
+const isSilent = (el = audio) => el.src === SILENT_URL;
+function silentPlay(el) {
+  try {
+    el.src = SILENT_URL;
+    unlockedEls.add(el);
+    const p = el.play();
+    if (p) p.catch((err) => { if (err.name === 'NotAllowedError') unlockedEls.delete(el); });
+  } catch { unlockedEls.delete(el); }
+}
+// Chamado sempre num toque do usuário: libera o player reserva para uso futuro.
+function unlockSpare() {
+  const s = spare();
+  if (!unlockedEls.has(s)) silentPlay(s);
+}
 function unlockFor(id) {
-  if (unlocked || urlCache.has(id)) return;
-  try { audio.src = SILENT_URL; const p = audio.play(); if (p) p.catch(() => {}); } catch { /* ignore */ }
+  unlockSpare();
+  if (unlockedEls.has(audio) || urlCache.has(id)) return;
+  silentPlay(audio);
 }
 
 let loadTok = 0;
 let pendingSeek = 0;
-async function startTrack(id, autoplay, seekTo = 0) {
+async function startTrack(id, autoplay, seekTo = 0, swap = false) {
+  clearHandoff();
   const tok = ++loadTok;
   let url = urlCache.get(id);
   if (!url) {
@@ -237,14 +256,45 @@ async function startTrack(id, autoplay, seekTo = 0) {
   }
   if (!url) { toast('Não consegui abrir esta música'); return; }
   state.currentId = id;
-  pendingSeek = seekTo;
-  audio.src = url;
+  pendingSeek = 0;
+  const old = audio;
+  if (swap && autoplay && unlockedEls.has(spare())) audio = spare();
+  if (audio.src !== url) { pendingSeek = seekTo; audio.src = url; } else audio.currentTime = seekTo;
   audio.loop = shouldLoop();
+  applyVolume();
   if (autoplay) {
     const p = audio.play();
     if (p) p.catch((err) => { if (err.name !== 'AbortError') console.warn('play()', err); renderControls(); });
   }
+  if (audio !== old) { old.loop = false; old.pause(); }
   onTrackChanged();
+}
+
+// Troca antecipada de faixa: prepara a próxima no player reserva e começa a tocar
+// pouco antes do fim da atual, sem deixar o áudio parar.
+let handoffTimer = 0;
+function clearHandoff() { clearTimeout(handoffTimer); handoffTimer = 0; }
+function checkHandoff() {
+  if (audio.paused || audio.loop || isSilent() || timer.endOfTrack) return;
+  const d = audio.duration;
+  if (!isFinite(d) || d <= 0) return;
+  const left = d - audio.currentTime;
+  if (left > 4) { clearHandoff(); return; }
+  const s = spare();
+  if (!unlockedEls.has(s)) return;
+  const nid = peekNext();
+  const url = nid && urlCache.get(nid);
+  if (!url) return;
+  if (s.src !== url) { s.src = url; s.preload = 'auto'; s.load(); }
+  if (left < 0.9) { handoff(); return; }
+  if (!handoffTimer) handoffTimer = setTimeout(handoff, Math.max(0, (left - 0.15) * 1000));
+}
+function handoff() {
+  clearHandoff();
+  if (audio.paused || audio.ended || audio.loop || timer.endOfTrack) return;
+  const left = audio.duration - audio.currentTime;
+  if (!(left < 1.5)) return; // o usuário mudou a posição
+  next(true, true);
 }
 function shouldLoop() {
   if (timer.endOfTrack) return false;
@@ -307,7 +357,7 @@ function userPlay(src, startId, shuffle) {
   unlockFor(id);
   startTrack(id, true);
 }
-function next(auto = false) {
+function next(auto = false, swap = false) {
   const q = state.q, n = q.order.length;
   if (!n) return;
   if (q.pos + 1 < n) q.pos++;
@@ -319,7 +369,7 @@ function next(auto = false) {
   }
   const id = qid(q.pos);
   if (!auto) unlockFor(id);
-  startTrack(id, true);
+  startTrack(id, true, 0, swap);
 }
 function prev() {
   const q = state.q;
@@ -336,6 +386,7 @@ function togglePlay() {
   if (audio.paused || isSilent()) {
     if (!audio.getAttribute('src') || isSilent()) { unlockFor(state.currentId); startTrack(state.currentId, true); return; }
     resetFadeIfIdle();
+    unlockSpare();
     const p = audio.play();
     if (p) p.catch(() => {});
   } else {
@@ -1182,15 +1233,19 @@ function bindEvents() {
     updatePosition();
     saveState();
   };
-  audio.addEventListener('playing', () => { unlocked = true; onPlayState(); });
-  audio.addEventListener('play', () => { unlocked = true; });
-  audio.addEventListener('pause', onPlayState);
-  audio.addEventListener('ended', () => {
+  // Os dois players recebem os mesmos eventos; só o player atual é considerado.
+  const onAudio = (type, fn) => players.forEach((el) => el.addEventListener(type, (e) => {
+    if (type === 'playing') unlockedEls.add(el);
+    if (el === audio) fn(e);
+  }));
+  onAudio('playing', onPlayState);
+  onAudio('pause', () => { clearHandoff(); onPlayState(); });
+  onAudio('ended', () => {
     if (isSilent()) return;
     if (timer.endOfTrack) { timerFire(); return; }
     next(true);
   });
-  audio.addEventListener('loadedmetadata', () => {
+  onAudio('loadedmetadata', () => {
     if (isSilent()) return;
     if (pendingSeek && pendingSeek < audio.duration - 1) audio.currentTime = pendingSeek;
     pendingSeek = 0;
@@ -1203,15 +1258,16 @@ function bindEvents() {
     updatePosition();
   });
   let lastSave = 0;
-  audio.addEventListener('timeupdate', () => {
+  onAudio('timeupdate', () => {
     if (isSilent()) return;
     updateProgress();
     tickTimer();
+    checkHandoff();
     const now = Date.now();
     if (now - lastSave > 5000) { lastSave = now; saveState(); }
   });
-  audio.addEventListener('seeked', updatePosition);
-  audio.addEventListener('error', () => {
+  onAudio('seeked', () => { clearHandoff(); updatePosition(); });
+  onAudio('error', () => {
     if (isSilent() || !audio.getAttribute('src')) return;
     toast('Este formato de áudio não toca neste aparelho');
   });
@@ -1252,7 +1308,14 @@ async function init() {
   renderNow();
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('sw.js').catch((err) => console.warn('service worker', err));
+    // Quando uma versão nova do app é instalada, recarrega (só se nada estiver tocando).
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController && audio.paused && !importing) location.reload();
+    });
+    navigator.serviceWorker.register('sw.js')
+      .then((reg) => reg.update().catch(() => {}))
+      .catch((err) => console.warn('service worker', err));
   }
 }
 

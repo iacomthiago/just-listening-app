@@ -1,5 +1,7 @@
 # Just Listening
 
+**Abrir o app:** <https://iacomthiago.github.io/just-listening-app/>
+
 Player de músicas **locais** para iPhone e Android, feito como app web instalável (PWA).
 Ideal para ouvir as músicas que você gera e baixa (por exemplo, do Suno) com repetição e timer para dormir, sem assinatura e sem internet.
 
@@ -34,11 +36,11 @@ Ideal para ouvir as músicas que você gera e baixa (por exemplo, do Suno) com r
 
 Não precisa instalar nada no computador:
 
-1. Crie um repositório novo em <https://github.com/new> (por exemplo, `just-listening`), marcado como **Public**.
+1. Crie um repositório novo em <https://github.com/new> (por exemplo, `just-listening-app`), marcado como **Public** e com **Add README** ligado (repositórios vazios às vezes falham no primeiro upload).
 2. Na página do repositório, clique em **Add file → Upload files**.
 3. Arraste **todo o conteúdo** desta pasta (incluindo a pasta `icons`) e clique em **Commit changes**.
-4. Vá em **Settings → Pages**, em *Branch* escolha `main` e a pasta `/ (root)`, e clique em **Save**.
-5. Em um ou dois minutos o app estará em `https://SEU-USUARIO.github.io/just-listening/`.
+4. Vá em **Settings → Pages**, em *Branch* escolha o branch principal do repositório (`main`, ou o nome que sua conta usa) e a pasta `/ (root)`, e clique em **Save**.
+5. Em um ou dois minutos o app estará em `https://SEU-USUARIO.github.io/NOME-DO-REPOSITORIO/`.
 
 ### Publicando uma versão nova
 Ao alterar arquivos, aumente o número em `CACHE` no arquivo `sw.js` (por exemplo, `just-listening-v2`).
