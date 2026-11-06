@@ -59,8 +59,11 @@
       </div>
       <div class="player-cover" id="plCover"></div>
       <div class="player-meta">
-        <div class="pl-title" id="plTitle"></div>
-        <div class="pl-artist" id="plArtist"></div>
+        <div class="pl-meta-text">
+          <div class="pl-title" id="plTitle"></div>
+          <div class="pl-artist" id="plArtist"></div>
+        </div>
+        <button id="btnFav" class="icon-btn fav-btn" aria-label="Favoritar"></button>
       </div>
       <div class="seek">
         <input type="range" id="seek" min="0" max="1000" step="1" value="0" aria-label="Posição da música">
@@ -74,7 +77,10 @@
         <button id="btnRepeat" class="icon-btn toggle" aria-label="Repetir"></button>
       </div>
       <div class="player-bottom">
-        <button id="btnTimer" class="chip"><span id="timerIcon"></span><span id="timerLabel">Timer</span></button>
+        <div class="chips">
+          <button id="btnTimer" class="chip"><span id="timerIcon"></span><span id="timerLabel">Timer</span></button>
+          <button id="btnLyrics" class="chip"><span id="lyricsIcon"></span><span>Letra</span></button>
+        </div>
         <span id="repeatLabel" class="hint"></span>
       </div>
     </div>

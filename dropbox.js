@@ -142,6 +142,22 @@ export async function upload(path, data) {
   return res.json();
 }
 
+// Arquivo JSON pequeno (playlists, favoritas, letras). null se ainda não existe.
+export async function readJson(path) {
+  try {
+    const res = await call('https://content.dropboxapi.com/2/files/download', { arg: { path } });
+    return await res.json();
+  } catch (e) {
+    if (e.status === 409 && /not_found/.test(e.body || '')) return null;
+    throw e;
+  }
+}
+export async function writeJson(path, obj) {
+  const body = new TextEncoder().encode(JSON.stringify(obj));
+  const res = await call('https://content.dropboxapi.com/2/files/upload', { arg: { path, mode: 'overwrite', autorename: false, mute: true }, body });
+  return res.json();
+}
+
 function disconnectLocal() {
   auth = null;
   save(AUTH_KEY, null);

@@ -52,6 +52,21 @@ function picture(data, v22) {
   return new Blob([data.slice(p)], { type: mime });
 }
 
+// Letra (USLT): codificação, idioma (3 bytes), descrição terminada em \0 e o texto.
+function lyrics(data) {
+  const enc = data[0];
+  let p = 4;
+  if (enc === 1 || enc === 2) {
+    while (p + 1 < data.length && !(data[p] === 0 && data[p + 1] === 0)) p += 2;
+    p += 2;
+  } else {
+    while (p < data.length && data[p] !== 0) p++;
+    p += 1;
+  }
+  if (p >= data.length) return '';
+  return decode(data.subarray(p), enc).replace(/^﻿/, '').replace(/\u0000+$/g, '').replace(/\r\n?/g, '\n').trim();
+}
+
 export async function readTags(file) {
   const head = new Uint8Array(await file.slice(0, 10).arrayBuffer());
   if (head.length < 10 || head[0] !== 0x49 || head[1] !== 0x44 || head[2] !== 0x33) return {};
@@ -83,6 +98,7 @@ export async function readTags(file) {
     if (id === 'TIT2' || id === 'TT2') out.title = text(data);
     else if (id === 'TPE1' || id === 'TP1') out.artist = text(data);
     else if ((id === 'APIC' || id === 'PIC') && !out.picture) out.picture = picture(data, ver === 2);
+    else if ((id === 'USLT' || id === 'ULT') && !out.lyrics) out.lyrics = lyrics(data);
 
     pos = end;
   }

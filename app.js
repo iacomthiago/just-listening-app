@@ -3,7 +3,7 @@ import * as db from './db.js';
 import { readTags } from './id3.js';
 import * as dbx from './dropbox.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 // ---------------------------------------------------------------- utilidades
 const $ = (s, r = document) => r.querySelector(s);
@@ -59,6 +59,11 @@ const I = {
   updown: stroke('<path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/>'),
   goto: stroke('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>'),
   search: stroke('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
+  heart: stroke('<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/>'),
+  heartFill: fill('<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 0 0 0-7.8z"/>'),
+  lyrics: stroke('<path d="M4 6h16M4 10h16M4 14h10M4 18h7"/><circle cx="17.5" cy="17.5" r="2.5"/><path d="M20 17.5V11"/>'),
+  image: stroke('<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>'),
+  gear: stroke('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
   cloud: stroke('<path d="M7 18.5h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.5 9.6 4.5 4.5 0 0 0 7 18.5z"/><path d="m9.5 13.5 2.5-2.5 2.5 2.5M12 11v5"/>'),
 };
 
@@ -86,14 +91,24 @@ const state = {
   repeat: 'off', // off | all | one
   shuffle: false,
   fade: true,
+  timerWait: true, // ao fim do timer, espera a música terminar
 };
-const timer = { end: 0, fadeMs: 0, endOfTrack: false };
+const timer = { end: 0, fadeMs: 0, endOfTrack: false, wait: false };
+
+// Modo Dormir: playlist, tempo e opções escolhidas pelo usuário.
+const SLEEP_KEY = 'just-listening-sleep';
+const sleepPrefs = (() => {
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem(SLEEP_KEY)) || {}; } catch { /* ignore */ }
+  return { source: p.source || 'library', minutes: p.minutes || 60, shuffle: !!p.shuffle, wait: p.wait !== false };
+})();
+const saveSleepPrefs = () => { try { localStorage.setItem(SLEEP_KEY, JSON.stringify(sleepPrefs)); } catch { /* ignore */ } };
 let fadeFactor = 1;
 
 function saveState() {
   try {
     localStorage.setItem(LS_KEY, JSON.stringify({
-      repeat: state.repeat, shuffle: state.shuffle, fade: state.fade, sort: state.sort,
+      repeat: state.repeat, shuffle: state.shuffle, fade: state.fade, sort: state.sort, timerWait: state.timerWait,
       source: state.q.source, currentId: state.currentId, time: isSilent() ? 0 : audio.currentTime || 0,
     }));
   } catch { /* armazenamento indisponível */ }
@@ -121,13 +136,34 @@ function libraryIds() {
   return arr.map((t) => t.id);
 }
 const playlistById = (id) => state.playlists.find((p) => p.id === id);
+const favoriteIds = () => libraryIds().filter((id) => state.tracks.get(id).fav);
 function sourceIds(src) {
   if (src === 'library') return libraryIds();
+  if (src === 'favorites') return favoriteIds();
   const p = playlistById(src);
   return p ? p.trackIds.filter((id) => state.tracks.has(id)) : null;
 }
-const sourceName = (src) => (src === 'library' ? 'Todas as músicas' : playlistById(src)?.name || 'Playlist');
-const viewSource = () => (state.view.name === 'playlist' ? state.view.id : 'library');
+const sourceName = (src) => (src === 'library' ? 'Todas as músicas' : src === 'favorites' ? 'Favoritas' : playlistById(src)?.name || 'Playlist');
+const viewSource = () => (state.view.name === 'playlist' ? state.view.id : state.view.name === 'favorites' ? 'favorites' : 'library');
+const sortPlaylists = () => state.playlists.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+// Marca mudanças para a sincronização com o Dropbox.
+let syncTimer = 0;
+function scheduleSync() {
+  if (!dbx.isConnected()) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => syncNow(true), 2500);
+}
+async function touchPlaylist(p) {
+  p.updatedAt = Date.now();
+  await db.put('playlists', p);
+  scheduleSync();
+}
+async function touchTrack(t) {
+  t.metaAt = Date.now();
+  await db.put('tracks', t);
+  scheduleSync();
+}
 
 // ---------------------------------------------------------------- capas
 const coverUrls = new Map();
@@ -143,6 +179,34 @@ function dropCover(id) {
   if (u) URL.revokeObjectURL(u);
   coverUrls.delete(id);
   coverDataUrls.delete(id);
+}
+// Capas de playlist (guardadas na própria playlist).
+const plCoverUrls = new Map();
+function playlistCoverUrl(p) {
+  if (!p?.cover) return null;
+  let u = plCoverUrls.get(p.id);
+  if (!u) { u = URL.createObjectURL(new Blob([p.cover.data], { type: p.cover.type })); plCoverUrls.set(p.id, u); }
+  return u;
+}
+function dropPlaylistCover(id) {
+  const u = plCoverUrls.get(id);
+  if (u) URL.revokeObjectURL(u);
+  plCoverUrls.delete(id);
+  coverDataUrls.delete(`pl:${id}`);
+}
+function playlistCoverHTML(p, cls = 'sm') {
+  const u = playlistCoverUrl(p);
+  if (u) return `<div class="cover ${cls}"><img src="${u}" alt="" decoding="async"></div>`;
+  const ids = sourceIds(p.id) || [];
+  const withCover = state.tracks.get(ids.find((id) => state.tracks.get(id).cover));
+  return coverHTML(withCover, cls, p.id, I.list);
+}
+// Arte do que está tocando: capa da música ou, se não tiver, a capa da playlist.
+function nowArtHTML(t, cls) {
+  if (t?.cover) return coverHTML(t, cls);
+  const p = playlistById(state.q.source);
+  const u = playlistCoverUrl(p);
+  return u ? `<div class="cover ${cls}"><img src="${u}" alt="" decoding="async"></div>` : coverHTML(t, cls);
 }
 function coverHTML(t, cls = '', key, icon = I.note) {
   const u = coverUrl(t);
@@ -423,19 +487,39 @@ function cycleRepeat() {
 }
 
 // ---------------------------------------------------------------- timer
-function setTimer(minutes) {
+// wait = true: quando o tempo acabar, deixa a música atual terminar antes de parar.
+function setTimer(minutes, { wait = state.timerWait, quiet = false } = {}) {
   const ms = minutes * 60000;
   timer.end = Date.now() + ms;
   timer.fadeMs = Math.min(60000, ms / 3);
   timer.endOfTrack = false;
+  timer.wait = !!wait;
   fadeFactor = 1; applyVolume();
   audio.loop = shouldLoop();
   renderTimer();
-  toast(`A música para em ${fmtMinutes(minutes)}`);
+  if (!quiet) toast(`A música para em ${fmtMinutes(minutes)}${wait ? ', no fim da faixa' : ''}`);
+}
+
+// Modo Dormir: toca a playlist escolhida, repetindo, e liga o timer.
+function startSleep() {
+  let src = sleepPrefs.source;
+  if (!sourceIds(src)?.length) src = 'library';
+  if (!sourceIds(src)?.length) { toast('Importe músicas primeiro'); return; }
+  state.repeat = 'all';
+  userPlay(src, null, !!sleepPrefs.shuffle);
+  setTimer(sleepPrefs.minutes, { wait: sleepPrefs.wait, quiet: true });
+  renderControls();
+  saveState();
+  toast(`Boa noite! ${sourceName(src)} até ${fmtMinutes(sleepPrefs.minutes)}${sleepPrefs.wait ? ' (termina a música)' : ''}`);
+}
+function sleepSummary() {
+  const src = sourceIds(sleepPrefs.source)?.length ? sleepPrefs.source : 'library';
+  return `${sourceName(src)} · ${fmtMinutes(sleepPrefs.minutes)}${sleepPrefs.shuffle ? ' · aleatório' : ''}${sleepPrefs.wait ? ' · termina a música' : ''}`;
 }
 function setTimerEndOfTrack() {
   timer.end = 0;
   timer.endOfTrack = true;
+  clearHandoff();
   fadeFactor = 1; applyVolume();
   audio.loop = shouldLoop();
   renderTimer();
@@ -444,6 +528,7 @@ function setTimerEndOfTrack() {
 function cancelTimer() {
   timer.end = 0;
   timer.endOfTrack = false;
+  timer.wait = false;
   fadeFactor = 1; applyVolume();
   audio.loop = shouldLoop();
   pruneUrls(); prefetchNext();
@@ -458,14 +543,27 @@ function resetFadeIfIdle() {
 function tickTimer() {
   if (!timer.end) return;
   const left = timer.end - Date.now();
-  if (left <= 0) { timerFire(); return; }
-  if (state.fade && volumeWorks && left < timer.fadeMs) { fadeFactor = left / timer.fadeMs; applyVolume(); }
+  if (left <= 0) {
+    if (timer.wait && !audio.paused && state.currentId) {
+      // o tempo acabou: agora para quando a música atual terminar
+      timer.end = 0;
+      timer.endOfTrack = true;
+      clearHandoff();
+      audio.loop = shouldLoop();
+      renderTimer();
+      return;
+    }
+    timerFire();
+    return;
+  }
+  if (state.fade && volumeWorks && !timer.wait && left < timer.fadeMs) { fadeFactor = left / timer.fadeMs; applyVolume(); }
   renderTimerLabel(left);
 }
 function timerFire() {
   audio.pause();
   timer.end = 0;
   timer.endOfTrack = false;
+  timer.wait = false;
   audio.loop = shouldLoop();
   setTimeout(() => { fadeFactor = 1; applyVolume(); }, 400);
   renderTimer();
@@ -498,11 +596,14 @@ async function updateMediaSession() {
       ms.metadata = new MediaMetadata({ title: t.title, artist: t.artist || 'Just Listening', album: sourceName(state.q.source), artwork });
     } catch { /* ignore */ }
   };
-  const cached = t.cover && coverDataUrls.get(t.id);
-  set(cached ? [{ src: cached, sizes: '512x512', type: t.cover.type }] : fallbackArt);
-  if (t.cover && !cached) {
-    const d = await coverDataUrl(t);
-    if (d && state.currentId === t.id) set([{ src: d, sizes: '512x512', type: t.cover.type }]);
+  // capa da música; se não tiver, capa da playlist
+  const pl = playlistById(state.q.source);
+  const art = t.cover ? t : pl?.cover ? { id: `pl:${pl.id}`, cover: pl.cover } : null;
+  const cached = art && coverDataUrls.get(art.id);
+  set(cached ? [{ src: cached, sizes: '512x512', type: art.cover.type }] : fallbackArt);
+  if (art && !cached) {
+    const d = await coverDataUrl(art);
+    if (d && state.currentId === t.id) set([{ src: d, sizes: '512x512', type: art.cover.type }]);
   }
 }
 function updatePosition() {
@@ -575,6 +676,7 @@ async function addTrackFromFile(f, addedAt, extra = {}) {
     id,
     title: (tags.title || stripExt(f.name) || 'Sem nome').trim(),
     artist: (tags.artist || '').trim(),
+    lyrics: tags.lyrics || '',
     duration,
     cover,
     fileName: f.name,
@@ -621,7 +723,7 @@ async function importFiles(files, pid) {
   if (p) {
     const add = ids.filter((id) => !p.trackIds.includes(id));
     p.trackIds.push(...add);
-    await db.put('playlists', p);
+    await touchPlaylist(p);
   }
   if (state.q.source === 'library' || (p && state.q.source === p.id)) syncQueue();
   render();
@@ -642,6 +744,7 @@ const SYNC_KEY = 'just-listening-sync';
 const syncPrefs = (() => { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch { return {}; } })();
 if (syncPrefs.upload === undefined) syncPrefs.upload = true;
 if (!Array.isArray(syncPrefs.ignored)) syncPrefs.ignored = [];
+if (!syncPrefs.deletedPlaylists || typeof syncPrefs.deletedPlaylists !== 'object') syncPrefs.deletedPlaylists = {};
 const saveSyncPrefs = () => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(syncPrefs)); } catch { /* ignore */ } };
 let syncing = false;
 let syncAgain = false;
@@ -649,11 +752,114 @@ let syncAgain = false;
 async function addToFolderPlaylist(folder, trackId) {
   let p = state.playlists.find((x) => x.dropboxFolder === folder) || state.playlists.find((x) => x.name === folder);
   if (!p) {
-    p = { id: uid(), name: folder, trackIds: [], createdAt: Date.now(), dropboxFolder: folder };
+    // id fixo pelo nome da pasta: é o mesmo em todos os aparelhos
+    p = { id: `folder:${folder}`, name: folder, trackIds: [], createdAt: Date.now(), dropboxFolder: folder };
     state.playlists.push(p);
   }
   if (!p.trackIds.includes(trackId)) p.trackIds.push(trackId);
+  p.updatedAt = Date.now();
   await db.put('playlists', p);
+}
+
+// ---- Biblioteca compartilhada: playlists, favoritas, letras e nomes editados.
+// Cada item guarda quando mudou; na hora de juntar, vale a mudança mais recente.
+const LIBRARY_PATH = '/.just-listening/biblioteca.json';
+const abToB64 = (buf) => {
+  const bytes = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+};
+const b64ToAb = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
+
+function serializePlaylist(p) {
+  const remoteIds = p.trackIds.map((id) => state.tracks.get(id)?.remote?.id).filter(Boolean);
+  const missing = (p.missing || []).filter((rid) => !remoteIds.includes(rid));
+  return {
+    id: p.id,
+    name: p.name,
+    createdAt: p.createdAt || 0,
+    updatedAt: p.updatedAt || p.createdAt || 0,
+    folder: p.dropboxFolder || null,
+    tracks: [...remoteIds, ...missing],
+    cover: p.cover ? { type: p.cover.type, b64: abToB64(p.cover.data) } : null,
+  };
+}
+async function applyRemotePlaylist(r, local, byRemote) {
+  const p = local || { id: r.id, createdAt: r.createdAt || Date.now(), trackIds: [] };
+  const localOnly = local ? local.trackIds.filter((id) => !state.tracks.get(id)?.remote?.id) : [];
+  p.name = r.name;
+  p.trackIds = [...r.tracks.map((rid) => byRemote.get(rid)?.id).filter(Boolean), ...localOnly];
+  p.missing = r.tracks.filter((rid) => !byRemote.has(rid));
+  p.updatedAt = r.updatedAt || 0;
+  if (r.folder) p.dropboxFolder = r.folder; else delete p.dropboxFolder;
+  dropPlaylistCover(p.id);
+  p.cover = r.cover ? { type: r.cover.type, data: b64ToAb(r.cover.b64) } : null;
+  if (!local) state.playlists.push(p);
+  await db.put('playlists', p);
+}
+
+async function syncLibraryState() {
+  const remote = (await dbx.readJson(LIBRARY_PATH)) || {};
+  const R = { v: 1, playlists: remote.playlists || {}, tracks: remote.tracks || {}, deleted: remote.deleted || {} };
+  let push = !remote.v;
+  let changed = false;
+  const byRemote = new Map();
+  for (const t of state.tracks.values()) if (t.remote?.id) byRemote.set(t.remote.id, t);
+
+  // favoritas, letras e nomes editados
+  for (const [rid, t] of byRemote) {
+    const r = R.tracks[rid];
+    const mine = t.metaAt || 0;
+    if (r && (r.at || 0) > mine) {
+      t.fav = !!r.fav;
+      t.lyrics = r.lyrics || '';
+      if (r.title) t.title = r.title;
+      t.artist = r.artist || '';
+      t.metaAt = r.at;
+      await db.put('tracks', t);
+      changed = true;
+    } else if (mine && (!r || mine > (r.at || 0))) {
+      R.tracks[rid] = { fav: !!t.fav, lyrics: t.lyrics || '', title: t.title, artist: t.artist || '', at: mine };
+      push = true;
+    }
+  }
+
+  // playlists excluídas
+  for (const [id, at] of Object.entries(syncPrefs.deletedPlaylists)) {
+    if ((R.deleted[id] || 0) < at) { R.deleted[id] = at; push = true; }
+  }
+  for (const [id, at] of Object.entries(R.deleted)) {
+    const local = playlistById(id);
+    if (local && (local.updatedAt || local.createdAt || 0) <= at) {
+      state.playlists = state.playlists.filter((p) => p.id !== id);
+      await db.del('playlists', id);
+      dropPlaylistCover(id);
+      if (state.q.source === id) state.q.source = 'library';
+      if (sleepPrefs.source === id) { sleepPrefs.source = 'library'; saveSleepPrefs(); }
+      changed = true;
+    }
+    if (R.playlists[id] && (R.playlists[id].updatedAt || 0) <= at) { delete R.playlists[id]; push = true; }
+  }
+
+  // playlists criadas ou alteradas
+  const ids = new Set([...state.playlists.map((p) => p.id), ...Object.keys(R.playlists)]);
+  for (const id of ids) {
+    const local = playlistById(id);
+    const r = R.playlists[id];
+    const localAt = local ? local.updatedAt || local.createdAt || 0 : 0;
+    if (local && R.deleted[id] && localAt > R.deleted[id]) { delete R.deleted[id]; push = true; }
+    if (local && (!r || localAt > (r.updatedAt || 0))) {
+      R.playlists[id] = serializePlaylist(local);
+      push = true;
+    } else if (r && (!local || (r.updatedAt || 0) > localAt)) {
+      await applyRemotePlaylist(r, local, byRemote);
+      changed = true;
+    }
+  }
+  if (push) { R.updatedAt = Date.now(); await dbx.writeJson(LIBRARY_PATH, R); }
+  if (changed) sortPlaylists();
+  return changed;
 }
 
 async function syncNow(quiet = false) {
@@ -730,12 +936,16 @@ async function syncNow(quiet = false) {
       }
     }
 
+    let libChanged = false;
+    try { libChanged = await syncLibraryState(); } catch (err) { console.error('dropbox biblioteca', err); failed++; }
+
     syncPrefs.last = Date.now();
     saveSyncPrefs();
-    if (down) { syncQueue(); render(); }
+    if (down || libChanged) { syncQueue(); render(); renderNow(); }
     const parts = [];
     if (down) parts.push(`${down} ${down === 1 ? 'música baixada' : 'músicas baixadas'}`);
     if (up) parts.push(`${up} ${up === 1 ? 'enviada' : 'enviadas'}`);
+    if (libChanged) parts.push('playlists atualizadas');
     if (failed) parts.push(`${failed} com erro`);
     if (full) parts.push('sem espaço no aparelho');
     if (parts.length) toast(`Dropbox: ${parts.join(' · ')}`);
@@ -853,7 +1063,12 @@ async function deleteTrack(id) {
   const u = urlCache.get(id);
   if (u) { URL.revokeObjectURL(u); urlCache.delete(id); }
   for (const p of state.playlists) {
-    if (p.trackIds.includes(id)) { p.trackIds = p.trackIds.filter((x) => x !== id); await db.put('playlists', p); }
+    if (p.trackIds.includes(id)) {
+      p.trackIds = p.trackIds.filter((x) => x !== id);
+      // excluir só neste aparelho não tira a música da playlist nos outros
+      if (remoteId) p.missing = [...new Set([...(p.missing || []), remoteId])];
+      await db.put('playlists', p);
+    }
   }
   syncQueue();
   renderNow();
@@ -866,7 +1081,7 @@ async function addToPlaylist(pid, ids) {
   if (!p) return;
   const add = ids.filter((id) => !p.trackIds.includes(id));
   p.trackIds.push(...add);
-  await db.put('playlists', p);
+  if (add.length) await touchPlaylist(p);
   if (state.q.source === pid) syncQueue();
   render();
   if (!add.length) toast('Já estava na playlist');
@@ -876,7 +1091,7 @@ async function removeFromPlaylist(pid, id) {
   const p = playlistById(pid);
   if (!p) return;
   p.trackIds = p.trackIds.filter((x) => x !== id);
-  await db.put('playlists', p);
+  await touchPlaylist(p);
   if (state.q.source === pid) syncQueue();
   render();
   toast('Removida da playlist');
@@ -886,7 +1101,7 @@ async function movePlaylistTrack(pid, i, dir) {
   const j = i + dir;
   if (!p || j < 0 || j >= p.trackIds.length) return;
   [p.trackIds[i], p.trackIds[j]] = [p.trackIds[j], p.trackIds[i]];
-  await db.put('playlists', p);
+  await touchPlaylist(p);
   if (state.q.source === pid) syncQueue();
   render();
 }
@@ -895,13 +1110,18 @@ async function newPlaylist(ids = []) {
   if (!name) return;
   const p = { id: uid(), name, trackIds: [...ids], createdAt: Date.now() };
   state.playlists.push(p);
-  await db.put('playlists', p);
+  await touchPlaylist(p);
   if (ids.length) { toast(`Playlist “${name}” criada`); render(); }
   else setView({ name: 'playlist', id: p.id });
 }
 async function deletePlaylist(pid) {
   state.playlists = state.playlists.filter((p) => p.id !== pid);
   await db.del('playlists', pid);
+  dropPlaylistCover(pid);
+  syncPrefs.deletedPlaylists[pid] = Date.now(); // para apagar também nos outros aparelhos
+  saveSyncPrefs();
+  scheduleSync();
+  if (sleepPrefs.source === pid) { sleepPrefs.source = 'library'; saveSleepPrefs(); }
   if (state.q.source === pid) { state.q.source = 'library'; syncQueue(); renderNow(); }
   setView({ name: 'playlists' });
   toast('Playlist excluída');
@@ -978,10 +1198,12 @@ function trackMenu(id, src) {
   if (!t) return;
   const items = [
     { label: 'Tocar agora', icon: I.play, run: () => { if (id === state.currentId && state.q.source === src) { if (audio.paused) togglePlay(); } else userPlay(src, id); } },
+    { label: t.fav ? 'Remover das favoritas' : 'Favoritar', icon: t.fav ? I.heartFill : I.heart, run: () => toggleFav(id) },
+    { label: 'Letra', icon: I.lyrics, run: () => lyricsSheet(id) },
     { label: 'Adicionar à playlist', icon: I.plus, run: () => addToPlaylistSheet([id]) },
     { label: 'Editar nome e capa', icon: I.edit, run: () => editTrackSheet(id) },
   ];
-  if (src !== 'library') items.push({ label: 'Remover desta playlist', icon: I.minus, run: () => removeFromPlaylist(src, id) });
+  if (playlistById(src)) items.push({ label: 'Remover desta playlist', icon: I.minus, run: () => removeFromPlaylist(src, id) });
   items.push({
     label: 'Excluir do app', icon: I.trash, danger: true,
     run: async () => {
@@ -1002,9 +1224,11 @@ function playlistMenu(pid) {
       label: 'Renomear', icon: I.edit,
       run: async () => {
         const n = await promptSheet({ title: 'Renomear playlist', value: p.name });
-        if (n) { p.name = n; await db.put('playlists', p); render(); renderNow(); updateMediaSession(); }
+        if (n) { p.name = n; await touchPlaylist(p); render(); renderNow(); updateMediaSession(); }
       },
     },
+    { label: p.cover ? 'Trocar capa' : 'Escolher capa', icon: I.image, run: () => setPlaylistCover(pid) },
+    ...(p.cover ? [{ label: 'Remover capa', icon: I.minus, run: () => removePlaylistCover(pid) }] : []),
     {
       label: 'Excluir playlist', icon: I.trash, danger: true,
       run: async () => {
@@ -1047,6 +1271,114 @@ function addSongsSheet(pid) {
     'col',
   );
 }
+// ---- favoritas, letras e capa da playlist
+async function toggleFav(id) {
+  const t = state.tracks.get(id);
+  if (!t) return;
+  t.fav = !t.fav;
+  await touchTrack(t);
+  render();
+  if (id === state.currentId) renderFavButton();
+  if (state.q.source === 'favorites') syncQueue();
+  toast(t.fav ? 'Adicionada às favoritas ♥' : 'Removida das favoritas');
+}
+async function lyricsSheet(id) {
+  const t = state.tracks.get(id);
+  if (!t) return;
+  // músicas importadas antes desta versão: tenta ler a letra do próprio arquivo
+  if (!t.lyrics && /\.mp3$/i.test(t.fileName || '')) {
+    try {
+      const rec = await db.get('audio', id);
+      const tags = rec ? await readTags(new Blob([rec.data])) : {};
+      if (tags.lyrics) { t.lyrics = tags.lyrics; await db.put('tracks', t); }
+    } catch { /* ignore */ }
+  }
+  const viewHTML = () => (t.lyrics
+    ? `<div class="lyrics">${esc(t.lyrics)}</div>`
+    : '<p class="note lyrics-empty">Esta música ainda não tem letra. Toque em “Adicionar” e cole a letra (por exemplo, a do Suno).</p>');
+  openSheet(
+    `<div class="sheet-head"><h3>Letra</h3><button class="link-btn" id="lyEdit">${t.lyrics ? 'Editar' : 'Adicionar'}</button></div>
+     <div class="s lyrics-title">${esc(t.title)}${t.artist ? ` · ${esc(t.artist)}` : ''}</div>
+     <div class="lyrics-body" id="lyBody">${viewHTML()}</div>`,
+    (s) => {
+      s.querySelector('#lyEdit').addEventListener('click', (e) => {
+        e.currentTarget.hidden = true;
+        s.querySelector('#lyBody').innerHTML = `<textarea id="lyText" class="lyrics-input" placeholder="Cole a letra aqui…">${esc(t.lyrics || '')}</textarea>
+          <div class="sheet-buttons"><button class="pill ghost" id="lyCancel">Cancelar</button><button class="pill" id="lySave">Salvar</button></div>`;
+        const ta = s.querySelector('#lyText');
+        setTimeout(() => { try { ta.focus(); } catch { /* ignore */ } }, 60);
+        s.querySelector('#lyCancel').addEventListener('click', () => { closeSheet(); });
+        s.querySelector('#lySave').addEventListener('click', async () => {
+          t.lyrics = ta.value.replace(/\r\n?/g, '\n').trim();
+          await touchTrack(t);
+          closeSheet();
+          toast(t.lyrics ? 'Letra salva' : 'Letra removida');
+        });
+      });
+    },
+    'col lyrics-sheet',
+  );
+}
+function setPlaylistCover(pid) {
+  pickCover(async (file) => {
+    const p = playlistById(pid);
+    const c = await shrinkImage(file, 400);
+    if (!p || !c) { toast('Não consegui ler essa imagem'); return; }
+    dropPlaylistCover(pid);
+    p.cover = c;
+    await touchPlaylist(p);
+    render();
+    if (state.q.source === pid) { renderNow(); updateMediaSession(); }
+    toast('Capa da playlist atualizada');
+  });
+}
+async function removePlaylistCover(pid) {
+  const p = playlistById(pid);
+  if (!p) return;
+  dropPlaylistCover(pid);
+  p.cover = null;
+  await touchPlaylist(p);
+  render();
+  if (state.q.source === pid) { renderNow(); updateMediaSession(); }
+}
+
+// ---- Modo Dormir: ajustes
+function sleepSettingsSheet() {
+  const sources = [['library', 'Todas as músicas'], ['favorites', 'Favoritas'], ...state.playlists.map((p) => [p.id, p.name])];
+  const opts = [30, 45, 60, 90, 120];
+  let minutes = sleepPrefs.minutes;
+  openSheet(
+    `<h3>Modo Dormir</h3>
+     <label class="field"><span>O que tocar</span>
+       <select id="slSource" class="select">${sources.map(([v, n]) => `<option value="${esc(v)}" ${v === sleepPrefs.source ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+     </label>
+     <div class="field"><span>Parar depois de</span>
+       <div class="grid five" id="slMin">${opts.map((m) => `<button class="opt ${m === minutes ? 'sel' : ''}" data-min="${m}">${fmtMinutes(m)}</button>`).join('')}</div>
+     </div>
+     <label class="switch-row"><span>Esperar a música terminar antes de parar</span><input type="checkbox" class="switch" id="slWait" ${sleepPrefs.wait ? 'checked' : ''}></label>
+     <label class="switch-row"><span>Ordem aleatória</span><input type="checkbox" class="switch" id="slShuffle" ${sleepPrefs.shuffle ? 'checked' : ''}></label>
+     <p class="note">A playlist toca repetindo até o timer acabar.</p>
+     <div class="sheet-buttons"><button class="pill ghost" id="slSave">Salvar</button><button class="pill" id="slGo">${I.moon} Dormir agora</button></div>`,
+    (s) => {
+      s.querySelector('#slMin').addEventListener('click', (e) => {
+        const b = e.target.closest('[data-min]');
+        if (!b) return;
+        minutes = +b.dataset.min;
+        s.querySelectorAll('#slMin .opt').forEach((x) => x.classList.toggle('sel', x === b));
+      });
+      const save = () => {
+        sleepPrefs.source = s.querySelector('#slSource').value;
+        sleepPrefs.minutes = minutes;
+        sleepPrefs.wait = s.querySelector('#slWait').checked;
+        sleepPrefs.shuffle = s.querySelector('#slShuffle').checked;
+        saveSleepPrefs();
+      };
+      s.querySelector('#slSave').addEventListener('click', () => { save(); closeSheet(); render(); toast('Modo Dormir salvo'); });
+      s.querySelector('#slGo').addEventListener('click', () => { save(); closeSheet(); render(); startSleep(); });
+    },
+  );
+}
+
 function pickCover(cb) {
   const inp = $('#coverInput');
   inp.value = '';
@@ -1089,7 +1421,7 @@ function editTrackSheet(id) {
         t.title = s.querySelector('#ecTitle').value.trim() || t.title;
         t.artist = s.querySelector('#ecArtist').value.trim();
         if (newCover !== undefined) { t.cover = newCover; dropCover(id); }
-        await db.put('tracks', t);
+        await touchTrack(t);
         closeSheet();
         render();
         if (id === state.currentId) { renderNow(); updateMediaSession(); }
@@ -1109,10 +1441,12 @@ function timerSheet() {
        <button class="opt wide" data-eot>Quando esta música acabar</button>
        <button class="opt wide" data-custom>Outro tempo…</button>
      </div>
+     <label class="switch-row"><span>Esperar a música terminar antes de parar</span><input type="checkbox" class="switch" id="waitChk" ${state.timerWait ? 'checked' : ''}></label>
      <label class="switch-row"><span>Diminuir o volume aos poucos no final</span><input type="checkbox" class="switch" id="fadeChk" ${state.fade ? 'checked' : ''}></label>
-     ${volumeWorks ? '' : '<p class="note">No iPhone, o iOS não deixa apps da web mudarem o volume. Por isso, nele a música pausa sem diminuir aos poucos.</p>'}`,
+     ${volumeWorks ? '<p class="note">Com “esperar a música terminar”, o volume não diminui: a música acaba naturalmente.</p>' : '<p class="note">No iPhone, o iOS não deixa apps da web mudarem o volume. Ligue “esperar a música terminar” para não cortar a música no meio.</p>'}`,
     (s) => {
       renderTimer();
+      s.querySelector('#waitChk').addEventListener('change', (e) => { state.timerWait = e.target.checked; saveState(); });
       s.querySelectorAll('[data-min]').forEach((b) => b.addEventListener('click', () => { closeSheet(); setTimer(+b.dataset.min); }));
       s.querySelector('[data-eot]').addEventListener('click', () => {
         closeSheet();
@@ -1176,22 +1510,37 @@ function setView(v) {
   if (changed) window.scrollTo(0, 0);
 }
 function render() {
-  const tab = state.view.name === 'playlist' ? 'playlists' : state.view.name;
+  const tab = state.view.name === 'library' ? 'library' : 'playlists';
   document.querySelectorAll('.tabs button').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === tab);
     b.setAttribute('aria-selected', b.dataset.tab === tab);
   });
   if (state.view.name === 'library') renderLibrary();
   else if (state.view.name === 'playlists') renderPlaylists();
+  else if (state.view.name === 'favorites') renderFavorites();
   else renderPlaylist(state.view.id);
+}
+function renderFavorites() {
+  const view = $('#view');
+  const ids = favoriteIds();
+  const dur = ids.reduce((s, id) => s + (state.tracks.get(id).duration || 0), 0);
+  view.innerHTML = `<div class="pl-head">
+      <button class="icon-btn" data-act="back" aria-label="Voltar">${I.back}</button>
+      <div class="cover lg fav-cover pl-head-cover">${I.heartFill}</div>
+      <div class="pl-head-text"><h2>Favoritas</h2><div class="s">${plural(ids.length, 'música', 'músicas')}${dur ? ' · ' + fmtLong(dur) : ''}</div></div>
+    </div>
+    <div class="list-head"><div class="count"></div><div class="head-actions"><button class="pill ghost" data-act="shuffleAll" ${ids.length ? '' : 'disabled'}>${I.shuffle} Aleatório</button><button class="pill" data-act="playAll" ${ids.length ? '' : 'disabled'}>${I.play} Tocar</button></div></div>
+    ${ids.length ? `<ul class="list">${ids.map((id) => trackRow(state.tracks.get(id), 'favorites')).join('')}</ul>`
+    : `<div class="empty small"><p>Toque no ${I.heart.replace('<svg', '<svg class="inline-icon"')} no player, ou em ⋯ → Favoritar, e a música aparece aqui.</p></div>`}`;
 }
 const playingNow = () => state.currentId && !audio.paused && !isSilent();
 function eqHTML() { return `<span class="eq ${playingNow() ? '' : 'paused'}"><i></i><i></i><i></i></span>`; }
 function trackRow(t, src) {
   const playing = t.id === state.currentId;
   const sub = [t.artist, t.duration ? fmt(t.duration) : ''].filter(Boolean).join(' · ');
+  const fav = t.fav ? `<span class="fav-mark" aria-label="Favorita">${I.heartFill}</span>` : '';
   return `<li class="row ${playing ? 'playing' : ''}" data-id="${t.id}">
-    <button class="row-main" data-act="play">${coverHTML(t, 'sm')}<div class="row-text"><div class="t">${esc(t.title)}</div><div class="s">${esc(sub)}</div></div>${playing ? eqHTML() : ''}</button>
+    <button class="row-main" data-act="play">${coverHTML(t, 'sm')}<div class="row-text"><div class="t">${esc(t.title)}</div><div class="s">${fav}${esc(sub)}</div></div>${playing ? eqHTML() : ''}</button>
     <button class="icon-btn" data-act="more" aria-label="Opções de ${esc(t.title)}">${I.more}</button>
   </li>`;
 }
@@ -1252,11 +1601,10 @@ function renderPlaylists() {
   const view = $('#view');
   const rows = state.playlists.map((p) => {
     const ids = sourceIds(p.id);
-    const coverTrack = state.tracks.get(ids.find((id) => state.tracks.get(id).cover));
     const dur = ids.reduce((s, id) => s + (state.tracks.get(id).duration || 0), 0);
     const playing = state.q.source === p.id && state.currentId;
-    return `<li class="row ${playing ? 'playing' : ''}" data-pid="${p.id}">
-      <button class="row-main" data-act="openPlaylist">${coverHTML(coverTrack, 'sm', p.id, I.list)}<div class="row-text"><div class="t">${esc(p.name)}</div><div class="s">${plural(ids.length, 'música', 'músicas')}${dur ? ' · ' + fmtLong(dur) : ''}</div></div>${playing ? eqHTML() : ''}</button>
+    return `<li class="row ${playing ? 'playing' : ''}" data-pid="${esc(p.id)}">
+      <button class="row-main" data-act="openPlaylist">${playlistCoverHTML(p, 'sm')}<div class="row-text"><div class="t">${esc(p.name)}</div><div class="s">${plural(ids.length, 'música', 'músicas')}${dur ? ' · ' + fmtLong(dur) : ''}</div></div>${playing ? eqHTML() : ''}</button>
       <button class="icon-btn" data-act="playlistMore" aria-label="Opções da playlist">${I.more}</button>
     </li>`;
   }).join('');
@@ -1266,11 +1614,20 @@ function renderPlaylists() {
       <button class="row-main" data-act="openLibrary"><div class="cover sm all-cover">${I.note}</div><div class="row-text"><div class="t">Todas as músicas</div><div class="s">${plural(all.length, 'música', 'músicas')}${allDur ? ' · ' + fmtLong(allDur) : ''}</div></div>${state.q.source === 'library' && state.currentId ? eqHTML() : ''}</button>
       <span class="icon-btn" aria-hidden="true">${I.goto}</span>
     </li>` : '';
-  view.innerHTML = `<div class="list-head">
+  const favs = favoriteIds();
+  const favRow = all.length ? `<li class="row" data-pid="__fav">
+      <button class="row-main" data-act="openFavorites"><div class="cover sm fav-cover">${I.heartFill}</div><div class="row-text"><div class="t">Favoritas</div><div class="s">${plural(favs.length, 'música', 'músicas')}</div></div>${state.q.source === 'favorites' && state.currentId ? eqHTML() : ''}</button>
+      <span class="icon-btn" aria-hidden="true">${I.goto}</span>
+    </li>` : '';
+  const sleepCard = all.length ? `<div class="sleep-card">
+      <button class="sleep-main" data-act="sleep"><span class="sleep-moon">${I.moon}</span><div class="row-text"><div class="t">Dormir</div><div class="s">${esc(sleepSummary())}</div></div></button>
+      <button class="icon-btn" data-act="sleepSettings" aria-label="Ajustar o Modo Dormir">${I.gear}</button>
+    </div>` : '';
+  view.innerHTML = `${sleepCard}<div class="list-head">
       <div class="count">${plural(state.playlists.length, 'playlist', 'playlists')}</div>
       <button class="pill" data-act="newPlaylist">${I.plus} Nova playlist</button>
     </div>
-    <ul class="list">${allRow}${rows}</ul>
+    <ul class="list">${allRow}${favRow}${rows}</ul>
     ${rows ? '' : '<div class="empty small"><p>Crie playlists para organizar suas músicas. Por exemplo, uma só para dormir, com repetição ligada. Se usar o Dropbox, cada subpasta vira uma playlist.</p></div>'}`;
 }
 function renderPlaylist(pid) {
@@ -1282,6 +1639,7 @@ function renderPlaylist(pid) {
   const dur = ids.reduce((s, id) => s + (state.tracks.get(id).duration || 0), 0);
   const head = `<div class="pl-head">
       <button class="icon-btn" data-act="back" aria-label="Voltar">${I.back}</button>
+      <button class="pl-head-cover" data-act="plCover" aria-label="Capa da playlist">${playlistCoverHTML(p, 'lg')}</button>
       <div class="pl-head-text"><h2>${esc(p.name)}</h2><div class="s">${plural(ids.length, 'música', 'músicas')}${dur ? ' · ' + fmtLong(dur) : ''}</div></div>
       <button class="icon-btn" data-act="playlistMenu" aria-label="Opções da playlist">${I.more}</button>
     </div>`;
@@ -1328,10 +1686,11 @@ function renderNow() {
   }
   mini.hidden = false;
   document.body.classList.add('has-mini');
-  $('#miniCover').innerHTML = coverHTML(t, 'sm');
+  $('#miniCover').innerHTML = nowArtHTML(t, 'sm');
   $('#miniTitle').textContent = t.title;
   $('#miniSub').innerHTML = `<span class="moon-badge" id="miniBadge" hidden>${I.moon}</span>${esc(t.artist || sourceName(state.q.source))}`;
-  $('#plCover').innerHTML = coverHTML(t, 'xl');
+  $('#plCover').innerHTML = nowArtHTML(t, 'xl');
+  renderFavButton();
   $('#plTitle').textContent = t.title;
   $('#plArtist').textContent = t.artist || '';
   $('#plSource').textContent = sourceName(state.q.source);
@@ -1343,6 +1702,15 @@ function renderNow() {
   }
   renderControls();
   updateProgress();
+}
+function renderFavButton() {
+  const t = state.tracks.get(state.currentId);
+  const b = $('#btnFav');
+  if (!b || !t) return;
+  b.innerHTML = t.fav ? I.heartFill : I.heart;
+  b.classList.toggle('on', !!t.fav);
+  b.setAttribute('aria-label', t.fav ? 'Remover das favoritas' : 'Favoritar');
+  b.setAttribute('aria-pressed', !!t.fav);
 }
 function updateMediaSessionEmpty() {
   if (ms) { try { ms.metadata = null; ms.playbackState = 'none'; } catch { /* ignore */ } }
@@ -1428,6 +1796,7 @@ function bindEvents() {
   $('#btnNext').innerHTML = I.next;
   $('#btnShuffle').innerHTML = I.shuffle;
   $('#timerIcon').innerHTML = I.moon;
+  $('#lyricsIcon').innerHTML = I.lyrics;
 
   document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => setView({ name: b.dataset.tab })));
   $('#btnImport').addEventListener('click', () => pickFiles(state.view.name === 'playlist' ? state.view.id : null));
@@ -1464,6 +1833,10 @@ function bindEvents() {
       case 'newPlaylist': newPlaylist(); break;
       case 'openPlaylist': setView({ name: 'playlist', id: pid }); break;
       case 'openLibrary': setView({ name: 'library' }); break;
+      case 'openFavorites': setView({ name: 'favorites' }); break;
+      case 'sleep': startSleep(); break;
+      case 'sleepSettings': sleepSettingsSheet(); break;
+      case 'plCover': setPlaylistCover(state.view.id); break;
       case 'playlistMore': playlistMenu(pid); break;
       case 'playlistMenu': playlistMenu(state.view.id); break;
       case 'back': setView({ name: 'playlists' }); break;
@@ -1485,6 +1858,8 @@ function bindEvents() {
   $('#btnShuffle').addEventListener('click', () => setShuffle(!state.shuffle));
   $('#btnRepeat').addEventListener('click', cycleRepeat);
   $('#btnTimer').addEventListener('click', timerSheet);
+  $('#btnFav').addEventListener('click', () => { if (state.currentId) toggleFav(state.currentId); });
+  $('#btnLyrics').addEventListener('click', () => { if (state.currentId) lyricsSheet(state.currentId); });
   window.addEventListener('popstate', () => {
     if (sheetOpen()) closeSheet();
     if ($('#player').classList.contains('open')) closePlayer(true);
@@ -1589,6 +1964,7 @@ async function init() {
   state.shuffle = !!s.shuffle;
   state.fade = s.fade !== false;
   state.sort = ['recent', 'az', 'za'].includes(s.sort) ? s.sort : 'recent';
+  state.timerWait = s.timerWait !== false;
   // Abre nas playlists; sem nenhuma música ainda, abre na tela de importar.
   state.view = { name: state.tracks.size ? 'playlists' : 'library' };
   state.q.source = s.source && sourceIds(s.source) ? s.source : 'library';

@@ -5,23 +5,27 @@
 Player de músicas **locais** para iPhone e Android, feito como app web instalável (PWA).
 Ideal para ouvir as músicas que você gera e baixa (por exemplo, do Suno) com repetição e timer para dormir, sem assinatura e sem internet.
 
-**Versão atual: 1.2.0** · testado no iPhone (app instalado na Tela de Início) e no computador.
+**Versão atual: 1.3.0** · testado no iPhone (app instalado na Tela de Início) e no computador.
 
 ## Recursos
 
+- **Modo Dormir com um toque:** toca a playlist escolhida repetindo e liga o timer; pode esperar a música terminar antes de parar
+- **Favoritas ♥:** marque músicas e ouça a playlist automática "Favoritas"
+- **Letras:** veja a letra no player (lida do próprio MP3, se tiver) ou cole a letra do Suno
+- **Capa da playlist:** escolha uma imagem para cada playlist
 - Importa arquivos MP3, M4A, WAV, AAC, FLAC… direto do aparelho (vários de uma vez)
-- Lê nome, artista e capa das tags do MP3 automaticamente
-- Abre nas **Playlists**, com atalho para **Todas as músicas**
+- Lê nome, artista, capa e letra das tags do MP3 automaticamente
+- Abre nas **Playlists**, com atalho para **Todas as músicas** e **Favoritas**
 - Ordenar músicas por **Recentes, A–Z ou Z–A** e **buscar** por nome ou artista (sem se preocupar com acentos)
 - Várias playlists: criar, renomear, reordenar, excluir
 - Repetir a playlist ou repetir uma música só
 - Modo aleatório
 - **Toca a playlist inteira com a tela bloqueada**, inclusive voltando para a primeira música no "repetir playlist"
-- Timer para dormir (15 min a 2 h, tempo personalizado ou "quando esta música acabar") com volume diminuindo aos poucos no final
+- Timer para dormir (15 min a 2 h, tempo personalizado ou "quando esta música acabar"), com opção de esperar a música terminar ou de diminuir o volume aos poucos
 - Editar nome, artista e capa de cada música
 - Controles na tela bloqueada e na central de controle
 - Funciona offline: as músicas ficam guardadas no aparelho
-- **Sincronização com o Dropbox:** coloque músicas na pasta do app pelo computador e elas aparecem sozinhas no celular e no tablet (subpastas viram playlists)
+- **Sincronização com o Dropbox:** coloque músicas na pasta do app pelo computador e elas aparecem sozinhas no celular e no tablet (subpastas viram playlists). Playlists, favoritas, letras e nomes editados também ficam iguais em todos os aparelhos
 - Atualiza sozinho quando uma versão nova é publicada
 
 ## Sincronizar com o Dropbox
@@ -75,12 +79,13 @@ Depois abra <http://localhost:5173>.
 
 - **Fade-out no iPhone:** o iOS não permite que apps da web mudem o volume. No iPhone, o timer pausa a música no horário certo, mas sem diminuir o volume aos poucos. No Android funciona normalmente.
 - **Troca de faixa:** para não ficar sem som com a tela bloqueada no iPhone, a próxima música começa um instante antes do fim da atual. Isso pode cortar até ~1 segundo do final de cada música.
-- **Dropbox:** a sincronização só adiciona. Excluir no app não apaga no Dropbox, e playlists criadas no app ainda não são sincronizadas (só as que vêm de subpastas do Dropbox). No app instalado, a conexão usa um código de copiar e colar.
+- **Dropbox:** excluir uma música no app não apaga o arquivo no Dropbox. Playlists, favoritas e letras ficam no arquivo `.just-listening/biblioteca.json` da pasta do app; se o mesmo item for mudado em dois aparelhos, vale a mudança mais recente. No app instalado, a conexão usa um código de copiar e colar.
 - **Espaço:** as músicas ocupam espaço do aparelho. O app pede ao sistema para não apagar os dados automaticamente; veja o espaço usado no botão ⓘ. O plano grátis do Dropbox tem 2 GB (~300 músicas em MP3).
 - **Formatos:** o que toca depende do aparelho. MP3, M4A/AAC e WAV tocam em todos.
 
 ## Histórico de versões
 
+- **1.3.0:** Modo Dormir, timer que espera a música terminar, Favoritas, letras, capa da playlist e sincronização de playlists/favoritas/letras entre aparelhos
 - **1.2.0:** ordenar (Recentes, A–Z, Z–A), busca, abre nas Playlists com atalho "Todas as músicas"
 - **1.1.0:** sincronização com o Dropbox (subpastas viram playlists)
 - **1.0.1:** troca de faixa sem silêncio com a tela bloqueada no iPhone; atualização automática do app
@@ -88,8 +93,9 @@ Depois abra <http://localhost:5173>.
 
 ## Próximos passos (ideias)
 
-- Sincronizar também as playlists criadas no app entre os aparelhos
-- Tocar vídeos MP4 salvos no aparelho
+- Tocar vídeos MP4 salvos no aparelho (numa área separada, sem pesar no player de música)
+- "Tocar a seguir"
+- Abrir o app do Dropbox para outras pessoas
 - Fila de reprodução editável
 - Exportar/importar playlists
 
