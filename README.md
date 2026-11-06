@@ -5,7 +5,7 @@
 Player de músicas **locais** para iPhone e Android, feito como app web instalável (PWA).
 Ideal para ouvir as músicas que você gera e baixa (por exemplo, do Suno) com repetição e timer para dormir, sem assinatura e sem internet.
 
-**Versão atual: 1.3.0** · testado no iPhone (app instalado na Tela de Início) e no computador.
+**Versão atual: 1.4.0** · testado no iPhone (app instalado na Tela de Início) e no computador.
 
 ## Quer usar? Comece aqui
 
@@ -13,7 +13,7 @@ O app é **gratuito e aberto para qualquer pessoa**. Não precisa de cadastro.
 
 1. **Abra o link** <https://iacomthiago.github.io/just-listening-app/> no **Safari** (iPhone) ou no **Chrome** (Android).
 2. **Instale na tela inicial:** no iPhone, toque em Compartilhar → **Adicionar à Tela de Início**; no Android, toque em **Instalar** (ou menu ⋮ → Instalar app).
-3. **Abra pelo ícone** e toque em **Importar** para escolher suas músicas (MP3, M4A, WAV…). Dá para selecionar várias de uma vez.
+3. **Abra pelo ícone** e toque em **Importar** para escolher suas músicas (MP3, M4A, WAV…). Dá para selecionar várias de uma vez. Só tem o vídeo da música? Importe o **MP4 ou MOV** que o app guarda só o áudio.
 4. **Opcional, Dropbox:** para ter as mesmas músicas no celular, no tablet e no computador, toque em **ⓘ → Conectar Dropbox** (veja abaixo).
 
 **Sua privacidade:** suas músicas ficam **só no seu aparelho**. Se você conectar o Dropbox, o app usa **a sua própria conta**, numa pasta só dele (*Aplicativos › Just Listening Thiago*) — sem acesso ao resto dos seus arquivos. Ninguém mais, nem o autor do app, vê suas músicas.
@@ -25,6 +25,7 @@ O app é **gratuito e aberto para qualquer pessoa**. Não precisa de cadastro.
 - **Letras:** veja a letra no player (lida do próprio MP3, se tiver) ou cole a letra do Suno
 - **Capa da playlist:** escolha uma imagem para cada playlist
 - Importa arquivos MP3, M4A, WAV, AAC, FLAC… direto do aparelho (vários de uma vez)
+- **Áudio de vídeos:** importe um vídeo MP4/MOV e o app extrai só o áudio (.m4a), sem perder qualidade, em poucos segundos; a capa vem de um quadro do vídeo. Funciona também com vídeos colocados na pasta do Dropbox
 - Lê nome, artista, capa e letra das tags do MP3 automaticamente
 - Abre nas **Playlists**, com atalho para **Todas as músicas** e **Favoritas**
 - Ordenar músicas por **Recentes, A–Z ou Z–A** e **buscar** por nome ou artista (sem se preocupar com acentos)
@@ -95,9 +96,11 @@ Depois abra <http://localhost:5173>.
 - **Dropbox:** excluir uma música no app não apaga o arquivo no Dropbox. Playlists, favoritas e letras ficam no arquivo `.just-listening/biblioteca.json` da pasta do app; se o mesmo item for mudado em dois aparelhos, vale a mudança mais recente. No app instalado, a conexão usa um código de copiar e colar.
 - **Espaço:** as músicas ocupam espaço do aparelho. O app pede ao sistema para não apagar os dados automaticamente; veja o espaço usado no botão ⓘ. O plano grátis do Dropbox tem 2 GB (~300 músicas em MP3).
 - **Formatos:** o que toca depende do aparelho. MP3, M4A/AAC e WAV tocam em todos.
+- **Vídeos:** MP4 e MOV (câmera, WhatsApp, YouTube Studio, gravações de tela). WebM ainda não é suportado. Use só vídeos que você tem direito de usar.
 
 ## Histórico de versões
 
+- **1.4.0:** importar vídeos MP4/MOV e guardar só o áudio (sem perda de qualidade)
 - **1.3.0:** Modo Dormir, timer que espera a música terminar, Favoritas, letras, capa da playlist e sincronização de playlists/favoritas/letras entre aparelhos
 - **1.2.0:** ordenar (Recentes, A–Z, Z–A), busca, abre nas Playlists com atalho "Todas as músicas"
 - **1.1.0:** sincronização com o Dropbox (subpastas viram playlists)
@@ -120,5 +123,6 @@ Depois abra <http://localhost:5173>.
 | `db.js` | Armazenamento local (IndexedDB) |
 | `id3.js` | Leitura de nome/artista/capa dos MP3 |
 | `dropbox.js` | Login e acesso à pasta do app no Dropbox |
+| `video-audio.js` | Extrai o áudio de vídeos MP4/MOV (carregado só quando precisa) |
 | `sw.js` | Funcionamento offline |
 | `manifest.webmanifest` | Nome, ícone e cores do app instalado |

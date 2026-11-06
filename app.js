@@ -3,7 +3,7 @@ import * as db from './db.js';
 import { readTags } from './id3.js';
 import * as dbx from './dropbox.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 
 // ---------------------------------------------------------------- utilidades
 const $ = (s, r = document) => r.querySelector(s);
@@ -632,7 +632,23 @@ function togglePlayFromRemote() {
 const AUDIO_EXT = /\.(mp3|m4a|aac|wav|flac|ogg|oga|opus|webm|aiff?|mp4|caf)$/i;
 const MIME = { mp3: 'audio/mpeg', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', webm: 'audio/webm', aif: 'audio/aiff', aiff: 'audio/aiff', caf: 'audio/x-caf' };
 const extOf = (name) => (name.match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase();
+const VIDEO_EXT = /\.(mp4|m4v|mov)$/i;
+// Vídeo: tipo video/* ou extensão de vídeo (um .mp4 marcado como audio/* já é só áudio).
+const isVideoFile = (f) => (f.type && f.type.startsWith('video/')) || (VIDEO_EXT.test(f.name) && !(f.type || '').startsWith('audio/'));
 const isAudioFile = (f) => (f.type && f.type.startsWith('audio/')) || AUDIO_EXT.test(f.name);
+const isImportable = (f) => isVideoFile(f) || isAudioFile(f);
+
+// Extrai o áudio de um vídeo (o código só é carregado quando precisa).
+async function audioFromVideo(f, onProgress) {
+  const va = await import('./video-audio.js');
+  const { file } = await va.extractAudio(f, onProgress);
+  let cover = null;
+  try {
+    const frame = await va.videoFrame(f);
+    if (frame) cover = await shrinkImage(frame);
+  } catch { /* sem capa */ }
+  return { file, cover };
+}
 const stripExt = (name) => name.replace(/\.[a-z0-9]+$/i, '').replace(/[_]+/g, ' ').trim();
 
 function probeDuration(blob) {
@@ -692,28 +708,40 @@ async function addTrackFromFile(f, addedAt, extra = {}) {
 }
 
 async function importFiles(files, pid) {
-  files = files.filter(isAudioFile).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { numeric: true }));
-  if (!files.length) { toast('Nenhum arquivo de áudio encontrado'); return; }
+  files = files.filter(isImportable).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { numeric: true }));
+  if (!files.length) { toast('Nenhum arquivo de áudio ou vídeo encontrado'); return; }
   importing = true;
   try { await navigator.storage?.persist?.(); } catch { /* ignore */ }
-  const existing = new Map([...state.tracks.values()].map((t) => [`${t.fileName}|${t.size}`, t.id]));
+  const existing = new Map();
+  for (const t of state.tracks.values()) {
+    existing.set(`${t.fileName}|${t.size}`, t.id);
+    if (t.sourceKey) existing.set(t.sourceKey, t.id); // vídeo já importado antes
+  }
   const base = Date.now();
   const ids = [];
-  let added = 0, skipped = 0, failed = 0;
+  let added = 0, skipped = 0, failed = 0, lastError = '';
 
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
-    toast(`Importando ${i + 1} de ${files.length}…`, true);
+    const of = files.length > 1 ? ` (${i + 1} de ${files.length})` : '';
+    toast(`Importando${of}…`, true);
     const key = `${f.name}|${f.size}`;
     if (existing.has(key)) { skipped++; ids.push(existing.get(key)); continue; }
     try {
-      const t = await addTrackFromFile(f, base + (files.length - i));
+      let src = f, extra = {};
+      if (isVideoFile(f)) {
+        const { file, cover } = await audioFromVideo(f, (p) => toast(`Extraindo o áudio do vídeo${of}… ${Math.round(p * 100)}%`, true));
+        src = file;
+        extra = { sourceKey: key, ...(cover ? { cover } : {}) };
+      }
+      const t = await addTrackFromFile(src, base + (files.length - i), extra);
       existing.set(key, t.id);
       ids.push(t.id);
       added++;
     } catch (err) {
       console.error('importar', f.name, err);
       failed++;
+      if (err?.code) lastError = err.message;
       if (err && err.name === 'QuotaExceededError') { toast('Acabou o espaço disponível para o app'); break; }
     }
   }
@@ -732,7 +760,8 @@ async function importFiles(files, pid) {
   if (added) parts.push(plural(added, 'música importada', 'músicas importadas'));
   if (skipped) parts.push(plural(skipped, 'já existia', 'já existiam'));
   if (failed) parts.push(plural(failed, 'falhou', 'falharam'));
-  toast((parts.join(' · ') || 'Nada importado') + (p ? ` → ${p.name}` : ''));
+  if (lastError && !added) toast(lastError);
+  else toast((parts.join(' · ') || 'Nada importado') + (p ? ` → ${p.name}` : '') + (lastError ? ` (${lastError})` : ''));
   if (added && dbx.isConnected() && syncPrefs.upload) setTimeout(() => syncNow(true), 2800);
 }
 
@@ -872,7 +901,7 @@ async function syncNow(quiet = false) {
   const progress = (msg) => { shown = true; toast(msg, true); };
   try {
     if (!quiet) progress('Dropbox: verificando…');
-    const files = (await dbx.listFiles()).filter((f) => AUDIO_EXT.test(f.name));
+    const files = (await dbx.listFiles()).filter((f) => AUDIO_EXT.test(f.name) || VIDEO_EXT.test(f.name));
     const ignored = new Set(syncPrefs.ignored);
     const byRemote = new Map();
     const byKey = new Map();
@@ -902,8 +931,14 @@ async function syncNow(quiet = false) {
       progress(`Dropbox: baixando ${i + 1} de ${toDownload.length}…`);
       try {
         const data = await dbx.download(f.id);
-        const file = new File([data], f.name, { type: MIME[extOf(f.name)] || 'audio/mpeg' });
-        const t = await addTrackFromFile(file, base + (toDownload.length - i), { remote: { id: f.id, path: f.path_display } });
+        let file = new File([data], f.name, { type: MIME[extOf(f.name)] || 'audio/mpeg' });
+        const extra = { remote: { id: f.id, path: f.path_display } };
+        if (VIDEO_EXT.test(f.name)) { // vídeo no Dropbox: guarda só o áudio
+          const v = await audioFromVideo(new File([data], f.name, { type: 'video/mp4' }));
+          file = v.file;
+          if (v.cover) extra.cover = v.cover;
+        }
+        const t = await addTrackFromFile(file, base + (toDownload.length - i), extra);
         const folder = f.path_display.split('/').slice(1, -1).join(' / ');
         if (folder) await addToFolderPlaylist(folder, t.id);
         down++;
@@ -1576,7 +1611,7 @@ function renderLibrary() {
     view.innerHTML = `<div class="empty">
       <div class="empty-art">${I.note}</div>
       <h2>Suas músicas, do seu jeito</h2>
-      <p>Importe os arquivos que você baixou (MP3, M4A, WAV…). Eles ficam guardados neste aparelho e tocam sem internet.</p>
+      <p>Importe os arquivos que você baixou (MP3, M4A, WAV…) ou um vídeo (MP4, MOV): o app guarda só o áudio. Tudo fica neste aparelho e toca sem internet.</p>
       <button class="pill big" data-act="import">${I.upload} Importar músicas</button>
       <p class="hint">${isIOS ? 'No iPhone, os arquivos aparecem no app Arquivos (normalmente em “Downloads”). Dá para selecionar vários de uma vez.' : 'Você pode selecionar vários arquivos de uma vez.'}</p>
     </div>`;
@@ -1997,4 +2032,4 @@ async function init() {
 init();
 
 // Acesso para testes no console do navegador.
-window.JustListening = { state, importFiles, setTimer, VERSION };
+window.JustListening = { state, importFiles, setTimer, audioFromVideo, VERSION };
