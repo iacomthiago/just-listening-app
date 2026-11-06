@@ -5,18 +5,24 @@
 Player de músicas **locais** para iPhone e Android, feito como app web instalável (PWA).
 Ideal para ouvir as músicas que você gera e baixa (por exemplo, do Suno) com repetição e timer para dormir, sem assinatura e sem internet.
 
+**Versão atual: 1.2.0** · testado no iPhone (app instalado na Tela de Início) e no computador.
+
 ## Recursos
 
 - Importa arquivos MP3, M4A, WAV, AAC, FLAC… direto do aparelho (vários de uma vez)
 - Lê nome, artista e capa das tags do MP3 automaticamente
+- Abre nas **Playlists**, com atalho para **Todas as músicas**
+- Ordenar músicas por **Recentes, A–Z ou Z–A** e **buscar** por nome ou artista (sem se preocupar com acentos)
 - Várias playlists: criar, renomear, reordenar, excluir
 - Repetir a playlist ou repetir uma música só
 - Modo aleatório
+- **Toca a playlist inteira com a tela bloqueada**, inclusive voltando para a primeira música no "repetir playlist"
 - Timer para dormir (15 min a 2 h, tempo personalizado ou "quando esta música acabar") com volume diminuindo aos poucos no final
 - Editar nome, artista e capa de cada música
 - Controles na tela bloqueada e na central de controle
 - Funciona offline: as músicas ficam guardadas no aparelho
-- Sincronização opcional com o Dropbox: coloque músicas na pasta do app pelo computador e elas aparecem sozinhas no celular e no tablet (subpastas viram playlists)
+- **Sincronização com o Dropbox:** coloque músicas na pasta do app pelo computador e elas aparecem sozinhas no celular e no tablet (subpastas viram playlists)
+- Atualiza sozinho quando uma versão nova é publicada
 
 ## Sincronizar com o Dropbox
 
@@ -54,8 +60,8 @@ Não precisa instalar nada no computador:
 5. Em um ou dois minutos o app estará em `https://SEU-USUARIO.github.io/NOME-DO-REPOSITORIO/`.
 
 ### Publicando uma versão nova
-Ao alterar arquivos, aumente o número em `CACHE` no arquivo `sw.js` (por exemplo, `just-listening-v2`).
-Assim os aparelhos baixam a versão nova (ela aparece na segunda vez que o app é aberto).
+Ao alterar arquivos, aumente o número em `CACHE` no arquivo `sw.js` (por exemplo, `just-listening-v5`) e o `VERSION` em `app.js`.
+Os aparelhos baixam a versão nova sozinhos e recarregam quando nada estiver tocando.
 
 ## Testar no computador
 
@@ -68,12 +74,22 @@ Depois abra <http://localhost:5173>.
 ## Limitações conhecidas
 
 - **Fade-out no iPhone:** o iOS não permite que apps da web mudem o volume. No iPhone, o timer pausa a música no horário certo, mas sem diminuir o volume aos poucos. No Android funciona normalmente.
-- **Espaço:** as músicas ocupam espaço do aparelho. O app pede ao sistema para não apagar os dados automaticamente; veja o espaço usado no botão ⓘ.
+- **Troca de faixa:** para não ficar sem som com a tela bloqueada no iPhone, a próxima música começa um instante antes do fim da atual. Isso pode cortar até ~1 segundo do final de cada música.
+- **Dropbox:** a sincronização só adiciona. Excluir no app não apaga no Dropbox, e playlists criadas no app ainda não são sincronizadas (só as que vêm de subpastas do Dropbox). No app instalado, a conexão usa um código de copiar e colar.
+- **Espaço:** as músicas ocupam espaço do aparelho. O app pede ao sistema para não apagar os dados automaticamente; veja o espaço usado no botão ⓘ. O plano grátis do Dropbox tem 2 GB (~300 músicas em MP3).
 - **Formatos:** o que toca depende do aparelho. MP3, M4A/AAC e WAV tocam em todos.
+
+## Histórico de versões
+
+- **1.2.0:** ordenar (Recentes, A–Z, Z–A), busca, abre nas Playlists com atalho "Todas as músicas"
+- **1.1.0:** sincronização com o Dropbox (subpastas viram playlists)
+- **1.0.1:** troca de faixa sem silêncio com a tela bloqueada no iPhone; atualização automática do app
+- **1.0.0:** primeira versão: importar, playlists, repetir, aleatório, timer para dormir
 
 ## Próximos passos (ideias)
 
 - Sincronizar também as playlists criadas no app entre os aparelhos
+- Tocar vídeos MP4 salvos no aparelho
 - Fila de reprodução editável
 - Exportar/importar playlists
 
