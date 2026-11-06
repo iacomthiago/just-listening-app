@@ -7,6 +7,17 @@ Ideal para ouvir as músicas que você gera e baixa (por exemplo, do Suno) com r
 
 **Versão atual: 1.3.0** · testado no iPhone (app instalado na Tela de Início) e no computador.
 
+## Quer usar? Comece aqui
+
+O app é **gratuito e aberto para qualquer pessoa**. Não precisa de cadastro.
+
+1. **Abra o link** <https://iacomthiago.github.io/just-listening-app/> no **Safari** (iPhone) ou no **Chrome** (Android).
+2. **Instale na tela inicial:** no iPhone, toque em Compartilhar → **Adicionar à Tela de Início**; no Android, toque em **Instalar** (ou menu ⋮ → Instalar app).
+3. **Abra pelo ícone** e toque em **Importar** para escolher suas músicas (MP3, M4A, WAV…). Dá para selecionar várias de uma vez.
+4. **Opcional, Dropbox:** para ter as mesmas músicas no celular, no tablet e no computador, toque em **ⓘ → Conectar Dropbox** (veja abaixo).
+
+**Sua privacidade:** suas músicas ficam **só no seu aparelho**. Se você conectar o Dropbox, o app usa **a sua própria conta**, numa pasta só dele (*Aplicativos › Just Listening Thiago*) — sem acesso ao resto dos seus arquivos. Ninguém mais, nem o autor do app, vê suas músicas.
+
 ## Recursos
 
 - **Modo Dormir com um toque:** toca a playlist escolhida repetindo e liga o timer; pode esperar a música terminar antes de parar
@@ -35,6 +46,8 @@ Ideal para ouvir as músicas que você gera e baixa (por exemplo, do Suno) com r
 3. O app sincroniza ao abrir, ao voltar para ele e no botão de nuvem no topo. Músicas importadas direto no aparelho também são enviadas para o Dropbox (dá para desligar no ⓘ).
 
 Excluir uma música no app não apaga a cópia no Dropbox, e ela não é baixada de novo.
+
+Precisa de uma conta do Dropbox (o plano grátis tem 2 GB, cerca de 300 músicas em MP3). Cada pessoa usa a própria conta. A integração está liberada para até 500 contas.
 
 > Para usar o código em outro projeto: crie seu próprio app em <https://www.dropbox.com/developers/apps> (Scoped access → App folder, permissões `files.content.read`/`files.content.write`, PKCE permitido, Redirect URI com o endereço do seu site) e troque `APP_KEY` em `dropbox.js`.
 
@@ -93,9 +106,7 @@ Depois abra <http://localhost:5173>.
 
 ## Próximos passos (ideias)
 
-- Tocar vídeos MP4 salvos no aparelho (numa área separada, sem pesar no player de música)
 - "Tocar a seguir"
-- Abrir o app do Dropbox para outras pessoas
 - Fila de reprodução editável
 - Exportar/importar playlists
 
