@@ -3,7 +3,7 @@ import * as db from './db.js';
 import { readTags } from './id3.js';
 import * as dbx from './dropbox.js';
 
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 
 // ---------------------------------------------------------------- utilidades
 const $ = (s, r = document) => r.querySelector(s);
@@ -145,7 +145,12 @@ function sourceIds(src) {
 }
 const sourceName = (src) => (src === 'library' ? 'Todas as músicas' : src === 'favorites' ? 'Favoritas' : playlistById(src)?.name || 'Playlist');
 const viewSource = () => (state.view.name === 'playlist' ? state.view.id : state.view.name === 'favorites' ? 'favorites' : 'library');
-const sortPlaylists = () => state.playlists.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+// Playlists de pastas do Dropbox ficam em ordem alfabética (igual em todos os aparelhos).
+const sortPlaylists = () => state.playlists.sort((a, b) => {
+  const da = a.id.startsWith('dbx:'), db_ = b.id.startsWith('dbx:');
+  if (da && db_) return collator.compare(a.name, b.name);
+  return (a.createdAt || 0) - (b.createdAt || 0);
+});
 
 // Marca mudanças para a sincronização com o Dropbox.
 let syncTimer = 0;
@@ -748,7 +753,9 @@ async function importFiles(files, pid) {
   importing = false;
 
   const p = pid && playlistById(pid);
-  if (p) {
+  if (p && usesFolder(p)) {
+    await addToPlaylist(p.id, ids); // envia direto para a pasta da playlist
+  } else if (p) {
     const add = ids.filter((id) => !p.trackIds.includes(id));
     p.trackIds.push(...add);
     await touchPlaylist(p);
@@ -766,33 +773,135 @@ async function importFiles(files, pid) {
 }
 
 // ---------------------------------------------------------------- Dropbox
-// Sincronização aditiva: músicas novas no Dropbox são baixadas; músicas novas neste
-// aparelho são enviadas (se a opção estiver ligada). Subpastas do Dropbox viram playlists.
-// Excluir no app não apaga no Dropbox.
+// Com o Dropbox conectado, ele é a fonte oficial:
+//  • cada subpasta da pasta do app é uma playlist (criar, renomear, excluir e adicionar
+//    músicas numa playlist mexe na pasta);
+//  • cada música é reconhecida pela "impressão digital" do arquivo (content_hash do Dropbox):
+//    a mesma música em duas pastas aparece uma vez só no app;
+//  • ordem das músicas, capas, favoritas e letras ficam em .just-listening/biblioteca.json.
+// Excluir uma música no app não apaga no Dropbox.
 const SYNC_KEY = 'just-listening-sync';
 const syncPrefs = (() => { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch { return {}; } })();
 if (syncPrefs.upload === undefined) syncPrefs.upload = true;
 if (!Array.isArray(syncPrefs.ignored)) syncPrefs.ignored = [];
+if (!Array.isArray(syncPrefs.ignoredHashes)) syncPrefs.ignoredHashes = [];
 if (!syncPrefs.deletedPlaylists || typeof syncPrefs.deletedPlaylists !== 'object') syncPrefs.deletedPlaylists = {};
 const saveSyncPrefs = () => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(syncPrefs)); } catch { /* ignore */ } };
 let syncing = false;
 let syncAgain = false;
+let dbxBusy = false; // uma ação de playlist está mexendo no Dropbox
 
-async function addToFolderPlaylist(folder, trackId) {
-  let p = state.playlists.find((x) => x.dropboxFolder === folder) || state.playlists.find((x) => x.name === folder);
-  if (!p) {
-    // id fixo pelo nome da pasta: é o mesmo em todos os aparelhos
-    p = { id: `folder:${folder}`, name: folder, trackIds: [], createdAt: Date.now(), dropboxFolder: folder };
-    state.playlists.push(p);
-  }
-  if (!p.trackIds.includes(trackId)) p.trackIds.push(trackId);
-  p.updatedAt = Date.now();
-  await db.put('playlists', p);
+// Raiz dentro da pasta do app. Vazia no uso normal; uma subpasta isolada só em testes.
+const DBX_ROOT = (() => { try { return localStorage.getItem('just-listening-dbx-root') || ''; } catch { return ''; } })();
+const LIBRARY_PATH = `${DBX_ROOT}/.just-listening/biblioteca.json`;
+const HIDDEN_LOWER = `${DBX_ROOT}/.just-listening`.toLowerCase();
+const ROOT_LOWER = DBX_ROOT.toLowerCase();
+const dbxMode = () => dbx.isConnected();
+const safeName = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim().replace(/[. ]+$/, '') || 'Sem nome';
+const parentOf = (pathLower) => pathLower.slice(0, pathLower.lastIndexOf('/'));
+const baseName = (path) => path.slice(path.lastIndexOf('/') + 1);
+const folderPid = (pathLower) => `dbx:${pathLower}`;
+const isDbxPlaylist = (p) => !!p?.id?.startsWith('dbx:');
+const folderTitle = (pathDisplay) => pathDisplay.slice(DBX_ROOT.length).split('/').filter(Boolean).join(' / ');
+const trackFiles = (t) => Object.entries(t?.dbx?.files || {}).map(([id, path]) => ({ id, path, lower: path.toLowerCase() }));
+const fileNameFor = (t) => safeName(t.fileName || `${t.title}.${extOf(t.fileName || '') || 'mp3'}`);
+function trackByHash() {
+  const m = new Map();
+  for (const t of state.tracks.values()) if (t.dbx?.hash) m.set(t.dbx.hash, t);
+  return m;
+}
+async function ensureHash(t) {
+  if (t.dbx?.hash) return t.dbx.hash;
+  const rec = await db.get('audio', t.id);
+  if (!rec) return null;
+  t.dbx = { ...(t.dbx || {}), hash: await dbx.contentHash(rec.data), files: t.dbx?.files || {} };
+  await db.put('tracks', t);
+  return t.dbx.hash;
 }
 
-// ---- Biblioteca compartilhada: playlists, favoritas, letras e nomes editados.
-// Cada item guarda quando mudou; na hora de juntar, vale a mudança mais recente.
-const LIBRARY_PATH = '/.just-listening/biblioteca.json';
+// Coloca músicas numa pasta: envia (se ainda não estão no Dropbox), move (se estão soltas
+// na pasta principal) ou copia (se já estão em outra playlist).
+async function putTracksInFolder(tracks, folder) {
+  for (const t of tracks) {
+    await ensureHash(t);
+    const files = trackFiles(t);
+    if (files.some((f) => parentOf(f.lower) === folder.path_lower)) continue;
+    let meta;
+    if (!files.length) {
+      const rec = await db.get('audio', t.id);
+      if (!rec) continue;
+      meta = await dbx.upload(`${folder.path_display}/${fileNameFor(t)}`, rec.data);
+    } else {
+      const loose = files.find((f) => parentOf(f.lower) === ROOT_LOWER);
+      if (loose) {
+        meta = await dbx.move(loose.id, `${folder.path_display}/${baseName(loose.path)}`);
+        delete t.dbx.files[loose.id];
+      } else {
+        meta = await dbx.copy(files[0].id, `${folder.path_display}/${baseName(files[0].path)}`);
+      }
+    }
+    t.dbx.files[meta.id] = meta.path_display;
+    t.dbx.seen = true;
+    t.remote = { id: meta.id, path: meta.path_display };
+    await db.put('tracks', t);
+  }
+}
+// Tira uma música de uma pasta: apaga a cópia se ela existe em outro lugar; se era a
+// única, devolve para a pasta principal (a música continua no app e no Dropbox).
+async function takeTrackOutOfFolder(t, folderLower) {
+  const files = trackFiles(t);
+  const inside = files.filter((f) => parentOf(f.lower) === folderLower);
+  const outside = files.filter((f) => parentOf(f.lower) !== folderLower);
+  for (let i = 0; i < inside.length; i++) {
+    const f = inside[i];
+    if (outside.length || i > 0) {
+      await dbx.remove(f.id);
+      delete t.dbx.files[f.id];
+    } else {
+      const meta = await dbx.move(f.id, `${DBX_ROOT}/${baseName(f.path)}`);
+      t.dbx.files[f.id] = meta.path_display;
+    }
+  }
+  const first = trackFiles(t)[0];
+  if (first) t.remote = { id: first.id, path: first.path };
+  await db.put('tracks', t);
+}
+// Executa uma ação no Dropbox (precisa de internet), sem atropelar a sincronização.
+async function dbxOp(label, fn) {
+  if (!navigator.onLine) { toast('Sem internet: as playlists ficam no Dropbox. Conecte-se para editar.'); return false; }
+  for (let i = 0; syncing && i < 120; i++) await new Promise((r) => setTimeout(r, 250));
+  dbxBusy = true;
+  toast(`Dropbox: ${label}…`, true);
+  try {
+    await fn();
+    return true;
+  } catch (err) {
+    console.error('dropbox', label, err);
+    toast('Não consegui salvar no Dropbox. Tente de novo.');
+    return false;
+  } finally {
+    dbxBusy = false;
+  }
+}
+async function mergeTrackInto(dup, keep) {
+  for (const p of state.playlists) {
+    if (!p.trackIds.includes(dup.id)) continue;
+    p.trackIds = [...new Set(p.trackIds.map((id) => (id === dup.id ? keep.id : id)))];
+    await db.put('playlists', p);
+  }
+  if (dup.fav && !keep.fav) keep.fav = true;
+  if (dup.lyrics && !keep.lyrics) keep.lyrics = dup.lyrics;
+  if (dup.cover && !keep.cover) keep.cover = dup.cover;
+  await db.put('tracks', keep);
+  await db.del('audio', dup.id);
+  await db.del('tracks', dup.id);
+  state.tracks.delete(dup.id);
+  dropCover(dup.id);
+  const u = urlCache.get(dup.id);
+  if (u) { URL.revokeObjectURL(u); urlCache.delete(dup.id); }
+}
+
+// ---- Biblioteca compartilhada (ordem, capas, favoritas, letras)
 const abToB64 = (buf) => {
   const bytes = new Uint8Array(buf);
   let s = '';
@@ -801,44 +910,63 @@ const abToB64 = (buf) => {
 };
 const b64ToAb = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
 
-function serializePlaylist(p) {
-  const remoteIds = p.trackIds.map((id) => state.tracks.get(id)?.remote?.id).filter(Boolean);
-  const missing = (p.missing || []).filter((rid) => !remoteIds.includes(rid));
-  return {
-    id: p.id,
-    name: p.name,
-    createdAt: p.createdAt || 0,
-    updatedAt: p.updatedAt || p.createdAt || 0,
-    folder: p.dropboxFolder || null,
-    tracks: [...remoteIds, ...missing],
-    cover: p.cover ? { type: p.cover.type, b64: abToB64(p.cover.data) } : null,
-  };
+function replacePlaylistRefs(oldId, newId) {
+  if (state.q.source === oldId) state.q.source = newId;
+  if (sleepPrefs.source === oldId) { sleepPrefs.source = newId; saveSleepPrefs(); }
+  if (state.view.id === oldId) state.view = { ...state.view, id: newId };
 }
-async function applyRemotePlaylist(r, local, byRemote) {
-  const p = local || { id: r.id, createdAt: r.createdAt || Date.now(), trackIds: [] };
-  const localOnly = local ? local.trackIds.filter((id) => !state.tracks.get(id)?.remote?.id) : [];
-  p.name = r.name;
-  p.trackIds = [...r.tracks.map((rid) => byRemote.get(rid)?.id).filter(Boolean), ...localOnly];
-  p.missing = r.tracks.filter((rid) => !byRemote.has(rid));
-  p.updatedAt = r.updatedAt || 0;
-  if (r.folder) p.dropboxFolder = r.folder; else delete p.dropboxFolder;
+async function removeLocalPlaylist(p) {
+  state.playlists = state.playlists.filter((x) => x !== p);
+  await db.del('playlists', p.id);
   dropPlaylistCover(p.id);
-  p.cover = r.cover ? { type: r.cover.type, data: b64ToAb(r.cover.b64) } : null;
-  if (!local) state.playlists.push(p);
-  await db.put('playlists', p);
 }
 
-async function syncLibraryState() {
-  const remote = (await dbx.readJson(LIBRARY_PATH)) || {};
-  const R = { v: 1, playlists: remote.playlists || {}, tracks: remote.tracks || {}, deleted: remote.deleted || {} };
-  let push = !remote.v;
-  let changed = false;
-  const byRemote = new Map();
-  for (const t of state.tracks.values()) if (t.remote?.id) byRemote.set(t.remote.id, t);
+// Playlists antigas (criadas no app antes das pastas) viram pastas no Dropbox.
+// Playlists com o mesmo nome se juntam numa só.
+async function migrateLegacyPlaylists(folders) {
+  const legacy = state.playlists.filter((p) => !isDbxPlaylist(p));
+  for (const p of legacy) {
+    const name = safeName(p.dropboxFolder || p.name);
+    const lower = `${DBX_ROOT}/${name}`.toLowerCase();
+    let folder = folders.find((f) => f.path_lower === lower);
+    if (!folder) {
+      const meta = await dbx.createFolder(`${DBX_ROOT}/${name}`);
+      folder = { '.tag': 'folder', path_lower: lower, path_display: meta?.path_display || `${DBX_ROOT}/${name}` };
+      folders.push(folder);
+    }
+    const tracks = p.trackIds.map((id) => state.tracks.get(id)).filter(Boolean);
+    await putTracksInFolder(tracks, folder);
+    const pid = folderPid(folder.path_lower);
+    let target = playlistById(pid);
+    if (!target) {
+      target = { id: pid, name: folderTitle(folder.path_display), folderPath: folder.path_display, trackIds: [], createdAt: p.createdAt || Date.now() };
+      state.playlists.push(target);
+    }
+    target.trackIds = [...new Set([...target.trackIds, ...tracks.map((t) => t.id)])];
+    if (!target.cover && p.cover) target.cover = p.cover;
+    target.updatedAt = Date.now();
+    await db.put('playlists', target);
+    await removeLocalPlaylist(p);
+    replacePlaylistRefs(p.id, pid);
+  }
+  return legacy.length > 0;
+}
 
-  // favoritas, letras e nomes editados
-  for (const [rid, t] of byRemote) {
-    const r = R.tracks[rid];
+// Pastas do Dropbox -> playlists do app, e a biblioteca compartilhada (ordem, capas,
+// favoritas, letras). Em cada item vale a mudança mais recente.
+async function syncFolders(folders, byHash, byId) {
+  const remote = (await dbx.readJson(LIBRARY_PATH)) || {};
+  const R = { v: 2, meta: remote.meta || {}, folders: remote.folders || {} };
+  let push = remote.v !== 2;
+  let changed = false;
+  // favoritas/letras da versão anterior (guardadas pelo id do arquivo)
+  for (const [rid, m] of Object.entries(remote.tracks || {})) {
+    const f = byId.get(rid);
+    if (f && (R.meta[f.content_hash]?.at || 0) < (m.at || 0)) R.meta[f.content_hash] = m;
+  }
+
+  for (const [h, t] of byHash) {
+    const r = R.meta[h];
     const mine = t.metaAt || 0;
     if (r && (r.at || 0) > mine) {
       t.fav = !!r.fav;
@@ -849,82 +977,129 @@ async function syncLibraryState() {
       await db.put('tracks', t);
       changed = true;
     } else if (mine && (!r || mine > (r.at || 0))) {
-      R.tracks[rid] = { fav: !!t.fav, lyrics: t.lyrics || '', title: t.title, artist: t.artist || '', at: mine };
+      R.meta[h] = { fav: !!t.fav, lyrics: t.lyrics || '', title: t.title, artist: t.artist || '', at: mine };
       push = true;
     }
   }
 
-  // playlists excluídas
-  for (const [id, at] of Object.entries(syncPrefs.deletedPlaylists)) {
-    if ((R.deleted[id] || 0) < at) { R.deleted[id] = at; push = true; }
-  }
-  for (const [id, at] of Object.entries(R.deleted)) {
-    const local = playlistById(id);
-    if (local && (local.updatedAt || local.createdAt || 0) <= at) {
-      state.playlists = state.playlists.filter((p) => p.id !== id);
-      await db.del('playlists', id);
-      dropPlaylistCover(id);
-      if (state.q.source === id) state.q.source = 'library';
-      if (sleepPrefs.source === id) { sleepPrefs.source = 'library'; saveSleepPrefs(); }
+  const alive = new Set();
+  for (const f of folders) {
+    const pid = folderPid(f.path_lower);
+    alive.add(pid);
+    const members = [...byHash.values()].filter((t) => trackFiles(t).some((x) => parentOf(x.lower) === f.path_lower));
+    let p = playlistById(pid);
+    if (!p) { p = { id: pid, trackIds: [], createdAt: Date.now() }; state.playlists.push(p); changed = true; }
+    const title = folderTitle(f.path_display);
+    if (p.name !== title) { p.name = title; changed = true; }
+    p.folderPath = f.path_display;
+    const info = R.folders[f.path_lower] || {};
+    const localAt = p.updatedAt || 0;
+    const remoteAt = info.at || 0;
+    let order;
+    if (remoteAt > localAt) {
+      order = info.order || [];
+      dropPlaylistCover(pid);
+      p.cover = info.cover ? { type: info.cover.type, data: b64ToAb(info.cover.b64) } : null;
+      p.updatedAt = remoteAt;
       changed = true;
+    } else {
+      order = p.trackIds.map((id) => state.tracks.get(id)?.dbx?.hash).filter(Boolean);
     }
-    if (R.playlists[id] && (R.playlists[id].updatedAt || 0) <= at) { delete R.playlists[id]; push = true; }
-  }
-
-  // playlists criadas ou alteradas
-  const ids = new Set([...state.playlists.map((p) => p.id), ...Object.keys(R.playlists)]);
-  for (const id of ids) {
-    const local = playlistById(id);
-    const r = R.playlists[id];
-    const localAt = local ? local.updatedAt || local.createdAt || 0 : 0;
-    if (local && R.deleted[id] && localAt > R.deleted[id]) { delete R.deleted[id]; push = true; }
-    if (local && (!r || localAt > (r.updatedAt || 0))) {
-      R.playlists[id] = serializePlaylist(local);
+    const byMemberHash = new Map(members.map((t) => [t.dbx.hash, t]));
+    const ordered = order.filter((h) => byMemberHash.has(h)).map((h) => byMemberHash.get(h).id);
+    const rest = members.filter((t) => !ordered.includes(t.id)).sort((a, b) => collator.compare(a.title, b.title)).map((t) => t.id);
+    const ids = [...new Set([...ordered, ...rest])];
+    if (ids.join() !== p.trackIds.join()) { p.trackIds = ids; changed = true; }
+    await db.put('playlists', p);
+    if (localAt > remoteAt) {
+      R.folders[f.path_lower] = {
+        order: ids.map((id) => state.tracks.get(id).dbx.hash),
+        cover: p.cover ? { type: p.cover.type, b64: abToB64(p.cover.data) } : null,
+        at: localAt,
+      };
       push = true;
-    } else if (r && (!local || (r.updatedAt || 0) > localAt)) {
-      await applyRemotePlaylist(r, local, byRemote);
+    }
+  }
+  // pastas que não existem mais
+  for (const p of [...state.playlists]) {
+    if (isDbxPlaylist(p) && !alive.has(p.id)) {
+      await removeLocalPlaylist(p);
+      if (state.q.source === p.id) state.q.source = 'library';
       changed = true;
     }
   }
-  if (push) { R.updatedAt = Date.now(); await dbx.writeJson(LIBRARY_PATH, R); }
+  for (const k of Object.keys(R.folders)) if (!folders.some((f) => f.path_lower === k)) { delete R.folders[k]; push = true; }
+  if (push) await dbx.writeJson(LIBRARY_PATH, { ...R, updatedAt: Date.now() });
   if (changed) sortPlaylists();
   return changed;
 }
 
 async function syncNow(quiet = false) {
   if (!dbx.isConnected()) return;
-  if (syncing || importing) { syncAgain = true; return; }
+  if (syncing || importing || dbxBusy) { syncAgain = true; return; }
   if (!navigator.onLine) { if (!quiet) toast('Sem internet para sincronizar'); return; }
   syncing = true;
   renderSyncButton();
-  let down = 0, up = 0, failed = 0, full = false, shown = false;
+  let down = 0, up = 0, failed = 0, merged = 0, full = false, shown = false;
   const progress = (msg) => { shown = true; toast(msg, true); };
   try {
     if (!quiet) progress('Dropbox: verificando…');
-    const files = (await dbx.listFiles()).filter((f) => AUDIO_EXT.test(f.name) || VIDEO_EXT.test(f.name));
-    const ignored = new Set(syncPrefs.ignored);
-    const byRemote = new Map();
-    const byKey = new Map();
-    for (const t of state.tracks.values()) {
-      if (t.remote?.id) byRemote.set(t.remote.id, t);
-      else byKey.set(`${t.fileName}|${t.size}`, t);
-    }
-    const toDownload = [];
+    if (DBX_ROOT) await dbx.createFolder(DBX_ROOT);
+    const entries = (await dbx.listEntries(DBX_ROOT)).filter((e) => e.path_lower !== ROOT_LOWER && !e.path_lower.startsWith(HIDDEN_LOWER));
+    const folders = entries.filter((e) => e['.tag'] === 'folder');
+    const files = entries.filter((e) => e['.tag'] === 'file' && (AUDIO_EXT.test(e.name) || VIDEO_EXT.test(e.name)));
+    const byId = new Map(files.map((f) => [f.id, f]));
+    const groups = new Map(); // impressão digital -> arquivos (a mesma música em várias pastas)
     for (const f of files) {
-      if (byRemote.has(f.id) || ignored.has(f.id)) continue;
-      const key = `${f.name}|${f.size}`;
-      const local = byKey.get(key);
-      if (local) { // mesma música já existe aqui: só liga as duas
-        local.remote = { id: f.id, path: f.path_display };
-        byKey.delete(key);
-        byRemote.set(f.id, local);
-        await db.put('tracks', local);
-        continue;
-      }
-      toDownload.push(f);
+      if (!groups.has(f.content_hash)) groups.set(f.content_hash, []);
+      groups.get(f.content_hash).push(f);
     }
-    toDownload.sort((a, b) => a.path_display.localeCompare(b.path_display, 'pt-BR', { numeric: true }));
 
+    // 1) impressão digital de cada música deste aparelho
+    const ignored = new Set(syncPrefs.ignoredHashes);
+    for (const id of syncPrefs.ignored) { const f = byId.get(id); if (f) ignored.add(f.content_hash); }
+    syncPrefs.ignored = [];
+    syncPrefs.ignoredHashes = [...ignored];
+    for (const t of state.tracks.values()) {
+      if (t.dbx?.hash) continue;
+      const known = t.remote?.id && byId.get(t.remote.id);
+      if (known) {
+        t.dbx = { hash: known.content_hash, files: {}, seen: true };
+        await db.put('tracks', t);
+      } else {
+        progress('Dropbox: preparando músicas…');
+        await ensureHash(t);
+        if (t.remote?.id) { t.dbx.seen = true; await db.put('tracks', t); } // já foi sincronizada antes
+      }
+    }
+
+    // 2) músicas repetidas neste aparelho (mesma impressão digital): fica uma só
+    const byHash = new Map();
+    for (const t of [...state.tracks.values()].sort((a, b) => a.addedAt - b.addedAt)) {
+      const h = t.dbx?.hash;
+      if (!h) continue;
+      const first = byHash.get(h);
+      if (!first) { byHash.set(h, t); continue; }
+      if (t.id === state.currentId) { await mergeTrackInto(first, t); byHash.set(h, t); } else await mergeTrackInto(t, first);
+      merged++;
+    }
+
+    // 3) liga cada música aos arquivos dela no Dropbox (caminhos atualizados)
+    for (const [h, t] of byHash) {
+      const g = groups.get(h) || [];
+      const map = Object.fromEntries(g.map((f) => [f.id, f.path_display]));
+      if (JSON.stringify(map) !== JSON.stringify(t.dbx.files || {}) || (g.length && !t.dbx.seen)) {
+        t.dbx.files = map;
+        if (g.length) { t.dbx.seen = true; t.remote = { id: g[0].id, path: g[0].path_display }; }
+        await db.put('tracks', t);
+      }
+    }
+
+    // 4) baixa as músicas novas do Dropbox
+    const toDownload = [...groups.entries()]
+      .filter(([h]) => !byHash.has(h) && !ignored.has(h))
+      .map(([, g]) => g.sort((a, b) => a.path_lower.split('/').length - b.path_lower.split('/').length)[0])
+      .sort((a, b) => a.path_display.localeCompare(b.path_display, 'pt-BR', { numeric: true }));
     const base = Date.now();
     for (let i = 0; i < toDownload.length; i++) {
       const f = toDownload[i];
@@ -932,15 +1107,15 @@ async function syncNow(quiet = false) {
       try {
         const data = await dbx.download(f.id);
         let file = new File([data], f.name, { type: MIME[extOf(f.name)] || 'audio/mpeg' });
-        const extra = { remote: { id: f.id, path: f.path_display } };
+        const g = groups.get(f.content_hash);
+        const extra = { remote: { id: f.id, path: f.path_display }, dbx: { hash: f.content_hash, files: Object.fromEntries(g.map((x) => [x.id, x.path_display])), seen: true } };
         if (VIDEO_EXT.test(f.name)) { // vídeo no Dropbox: guarda só o áudio
           const v = await audioFromVideo(new File([data], f.name, { type: 'video/mp4' }));
           file = v.file;
           if (v.cover) extra.cover = v.cover;
         }
         const t = await addTrackFromFile(file, base + (toDownload.length - i), extra);
-        const folder = f.path_display.split('/').slice(1, -1).join(' / ');
-        if (folder) await addToFolderPlaylist(folder, t.id);
+        byHash.set(f.content_hash, t);
         down++;
       } catch (err) {
         console.error('dropbox download', f.path_display, err);
@@ -949,8 +1124,9 @@ async function syncNow(quiet = false) {
       }
     }
 
+    // 5) envia para a pasta principal as músicas novas deste aparelho
     if (syncPrefs.upload) {
-      const pending = [...state.tracks.values()].filter((t) => !t.remote?.id).sort((a, b) => a.addedAt - b.addedAt);
+      const pending = [...byHash.values()].filter((t) => !t.dbx.seen && !groups.has(t.dbx.hash)).sort((a, b) => a.addedAt - b.addedAt);
       for (let i = 0; i < pending.length; i++) {
         const t = pending[i];
         if (t.size > 140 * 1048576) continue; // limite do envio simples
@@ -958,8 +1134,9 @@ async function syncNow(quiet = false) {
         try {
           const rec = await db.get('audio', t.id);
           if (!rec) continue;
-          const name = (t.fileName || `${t.title}.${extOf(t.fileName || '') || 'mp3'}`).replace(/[\\/:*?"<>|]/g, '_').trim();
-          const meta = await dbx.upload(`/${name}`, rec.data);
+          const meta = await dbx.upload(`${DBX_ROOT}/${fileNameFor(t)}`, rec.data);
+          t.dbx.files = { [meta.id]: meta.path_display };
+          t.dbx.seen = true;
           t.remote = { id: meta.id, path: meta.path_display };
           await db.put('tracks', t);
           up++;
@@ -971,15 +1148,23 @@ async function syncNow(quiet = false) {
       }
     }
 
+    // 6) playlists antigas viram pastas; 7) pastas viram playlists
     let libChanged = false;
-    try { libChanged = await syncLibraryState(); } catch (err) { console.error('dropbox biblioteca', err); failed++; }
+    try {
+      if (state.playlists.some((p) => !isDbxPlaylist(p))) {
+        progress('Dropbox: organizando as playlists em pastas…');
+        libChanged = await migrateLegacyPlaylists(folders);
+      }
+      libChanged = (await syncFolders(folders, byHash, byId)) || libChanged;
+    } catch (err) { console.error('dropbox playlists', err); failed++; }
 
     syncPrefs.last = Date.now();
     saveSyncPrefs();
-    if (down || libChanged) { syncQueue(); render(); renderNow(); }
+    if (down || merged || libChanged) { syncQueue(); render(); renderNow(); }
     const parts = [];
     if (down) parts.push(`${down} ${down === 1 ? 'música baixada' : 'músicas baixadas'}`);
     if (up) parts.push(`${up} ${up === 1 ? 'enviada' : 'enviadas'}`);
+    if (merged) parts.push(`${merged} ${merged === 1 ? 'repetida unificada' : 'repetidas unificadas'}`);
     if (libChanged) parts.push('playlists atualizadas');
     if (failed) parts.push(`${failed} com erro`);
     if (full) parts.push('sem espaço no aparelho');
@@ -1063,7 +1248,7 @@ function dropboxBlockHTML() {
   const last = syncPrefs.last ? new Date(syncPrefs.last).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : 'nunca';
   return `<div class="info-block"><h4>Dropbox conectado</h4>
     ${a ? `<p>${esc(a.name)}${a.email ? ` · ${esc(a.email)}` : ''}</p>` : ''}
-    <p class="note">Pasta: Dropbox › Aplicativos › Just Listening Thiago<br>Última sincronização: ${last}</p>
+    <p class="note">Pasta: Dropbox › Aplicativos › Just Listening Thiago${DBX_ROOT ? ` › ${esc(DBX_ROOT.slice(1))} (teste)` : ''}<br>Cada subpasta é uma playlist: criar, renomear ou excluir uma playlist aqui faz o mesmo com a pasta.<br>Última sincronização: ${last}</p>
     <label class="switch-row"><span>Enviar as músicas deste aparelho para o Dropbox</span><input type="checkbox" class="switch" id="dbxUpload" ${syncPrefs.upload ? 'checked' : ''}></label>
     <div class="sheet-buttons start"><button class="pill" id="dbxSync">Sincronizar agora</button><button class="pill ghost" id="dbxOff">Desconectar</button></div></div>`;
 }
@@ -1083,7 +1268,9 @@ function bindDropboxBlock(s, ready) {
 // ---------------------------------------------------------------- edição
 async function deleteTrack(id) {
   const remoteId = state.tracks.get(id)?.remote?.id;
-  if (remoteId && !syncPrefs.ignored.includes(remoteId)) { syncPrefs.ignored.push(remoteId); saveSyncPrefs(); }
+  const hash = state.tracks.get(id)?.dbx?.hash;
+  if (hash && !syncPrefs.ignoredHashes.includes(hash)) { syncPrefs.ignoredHashes.push(hash); saveSyncPrefs(); }
+  else if (remoteId && !syncPrefs.ignored.includes(remoteId)) { syncPrefs.ignored.push(remoteId); saveSyncPrefs(); }
   const wasCurrent = id === state.currentId;
   if (wasCurrent) {
     audio.pause();
@@ -1111,10 +1298,19 @@ async function deleteTrack(id) {
   saveState();
   toast('Música excluída');
 }
+// No modo Dropbox, playlist = pasta: estas ações também mexem nos arquivos de lá.
+const usesFolder = (p) => isDbxPlaylist(p) && dbxMode() && p.folderPath;
+const folderOf = (p) => ({ path_lower: p.id.slice(4), path_display: p.folderPath });
+
 async function addToPlaylist(pid, ids) {
   const p = playlistById(pid);
   if (!p) return;
   const add = ids.filter((id) => !p.trackIds.includes(id));
+  if (add.length && usesFolder(p)) {
+    const ok = await dbxOp(add.length === 1 ? 'adicionando à pasta' : `adicionando ${add.length} músicas à pasta`,
+      () => putTracksInFolder(add.map((id) => state.tracks.get(id)).filter(Boolean), folderOf(p)));
+    if (!ok) return;
+  }
   p.trackIds.push(...add);
   if (add.length) await touchPlaylist(p);
   if (state.q.source === pid) syncQueue();
@@ -1125,11 +1321,47 @@ async function addToPlaylist(pid, ids) {
 async function removeFromPlaylist(pid, id) {
   const p = playlistById(pid);
   if (!p) return;
+  if (usesFolder(p)) {
+    const t = state.tracks.get(id);
+    const ok = await dbxOp('tirando da pasta', () => takeTrackOutOfFolder(t, folderOf(p).path_lower));
+    if (!ok) return;
+  }
   p.trackIds = p.trackIds.filter((x) => x !== id);
   await touchPlaylist(p);
   if (state.q.source === pid) syncQueue();
   render();
   toast('Removida da playlist');
+}
+async function renamePlaylist(p, newName) {
+  if (!usesFolder(p)) {
+    p.name = newName;
+    await touchPlaylist(p);
+    return true;
+  }
+  const name = safeName(newName);
+  const oldLower = p.id.slice(4);
+  let meta;
+  const ok = await dbxOp('renomeando a pasta', async () => { meta = await dbx.move(p.folderPath, `${DBX_ROOT}/${name}`); });
+  if (!ok) return false;
+  const newLower = meta.path_lower;
+  // atualiza os caminhos dos arquivos das músicas
+  for (const t of state.tracks.values()) {
+    let touched = false;
+    for (const [fid, path] of Object.entries(t.dbx?.files || {})) {
+      if (path.toLowerCase().startsWith(`${oldLower}/`)) { t.dbx.files[fid] = meta.path_display + path.slice(oldLower.length); touched = true; }
+    }
+    if (touched) await db.put('tracks', t);
+  }
+  const oldId = p.id;
+  await db.del('playlists', oldId);
+  dropPlaylistCover(oldId);
+  p.id = folderPid(newLower);
+  p.name = folderTitle(meta.path_display);
+  p.folderPath = meta.path_display;
+  await touchPlaylist(p);
+  replacePlaylistRefs(oldId, p.id);
+  sortPlaylists();
+  return true;
 }
 async function movePlaylistTrack(pid, i, dir) {
   const p = playlistById(pid);
@@ -1143,17 +1375,49 @@ async function movePlaylistTrack(pid, i, dir) {
 async function newPlaylist(ids = []) {
   const name = await promptSheet({ title: 'Nova playlist', placeholder: 'Ex.: Para dormir', ok: 'Criar' });
   if (!name) return;
-  const p = { id: uid(), name, trackIds: [...ids], createdAt: Date.now() };
-  state.playlists.push(p);
-  await touchPlaylist(p);
-  if (ids.length) { toast(`Playlist “${name}” criada`); render(); }
+  let p;
+  if (dbxMode()) {
+    // cria a pasta no Dropbox
+    const folderName = safeName(name);
+    let meta;
+    const ok = await dbxOp('criando a pasta', async () => { meta = await dbx.createFolder(`${DBX_ROOT}/${folderName}`); });
+    if (!ok) return;
+    const display = meta?.path_display || `${DBX_ROOT}/${folderName}`;
+    const pid = folderPid(display.toLowerCase());
+    p = playlistById(pid);
+    if (!p) {
+      p = { id: pid, name: folderTitle(display), folderPath: display, trackIds: [], createdAt: Date.now() };
+      state.playlists.push(p);
+      sortPlaylists();
+    }
+    await touchPlaylist(p);
+    if (ids.length) await addToPlaylist(p.id, ids);
+  } else {
+    p = { id: uid(), name, trackIds: [...ids], createdAt: Date.now() };
+    state.playlists.push(p);
+    await touchPlaylist(p);
+  }
+  if (ids.length) { toast(`Playlist “${p.name}” criada`); render(); }
   else setView({ name: 'playlist', id: p.id });
 }
 async function deletePlaylist(pid) {
+  const pl = playlistById(pid);
+  if (pl && usesFolder(pl)) {
+    // músicas que só estavam nesta pasta voltam para a pasta principal; cópias vão para a lixeira
+    const folder = folderOf(pl);
+    const ok = await dbxOp('excluindo a pasta', async () => {
+      for (const t of state.tracks.values()) {
+        if (trackFiles(t).some((f) => parentOf(f.lower) === folder.path_lower)) await takeTrackOutOfFolder(t, folder.path_lower);
+      }
+      const left = (await dbx.listEntries(folder.path_display)).filter((e) => e.path_lower !== folder.path_lower);
+      if (!left.length) await dbx.remove(folder.path_display);
+    });
+    if (!ok) return;
+  }
   state.playlists = state.playlists.filter((p) => p.id !== pid);
   await db.del('playlists', pid);
   dropPlaylistCover(pid);
-  syncPrefs.deletedPlaylists[pid] = Date.now(); // para apagar também nos outros aparelhos
+  if (!isDbxPlaylist(pl)) syncPrefs.deletedPlaylists[pid] = Date.now();
   saveSyncPrefs();
   scheduleSync();
   if (sleepPrefs.source === pid) { sleepPrefs.source = 'library'; saveSleepPrefs(); }
@@ -1259,7 +1523,11 @@ function playlistMenu(pid) {
       label: 'Renomear', icon: I.edit,
       run: async () => {
         const n = await promptSheet({ title: 'Renomear playlist', value: p.name });
-        if (n) { p.name = n; await touchPlaylist(p); render(); renderNow(); updateMediaSession(); }
+        if (n && n !== p.name && await renamePlaylist(p, n)) {
+          if (state.view.name === 'playlist') state.view = { name: 'playlist', id: p.id };
+          render(); renderNow(); updateMediaSession();
+          toast('Playlist renomeada');
+        }
       },
     },
     { label: p.cover ? 'Trocar capa' : 'Escolher capa', icon: I.image, run: () => setPlaylistCover(pid) },
@@ -2032,4 +2300,4 @@ async function init() {
 init();
 
 // Acesso para testes no console do navegador.
-window.JustListening = { state, importFiles, setTimer, audioFromVideo, VERSION };
+window.JustListening = { state, importFiles, setTimer, audioFromVideo, syncNow, addToPlaylist, removeFromPlaylist, movePlaylistTrack, renamePlaylist, deletePlaylist, VERSION };

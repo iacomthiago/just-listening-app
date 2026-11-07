@@ -5,7 +5,7 @@
 Player de músicas **locais** para iPhone e Android, feito como app web instalável (PWA).
 Ideal para ouvir as músicas que você gera e baixa (por exemplo, do Suno) com repetição e timer para dormir, sem assinatura e sem internet.
 
-**Versão atual: 1.4.0** · testado no iPhone (app instalado na Tela de Início) e no computador.
+**Versão atual: 1.5.0** · testado no iPhone (app instalado na Tela de Início) e no computador.
 
 ## Quer usar? Comece aqui
 
@@ -37,16 +37,27 @@ O app é **gratuito e aberto para qualquer pessoa**. Não precisa de cadastro.
 - Editar nome, artista e capa de cada música
 - Controles na tela bloqueada e na central de controle
 - Funciona offline: as músicas ficam guardadas no aparelho
-- **Sincronização com o Dropbox:** coloque músicas na pasta do app pelo computador e elas aparecem sozinhas no celular e no tablet (subpastas viram playlists). Playlists, favoritas, letras e nomes editados também ficam iguais em todos os aparelhos
+- **Sincronização com o Dropbox:** o Dropbox é a fonte oficial. Cada subpasta é uma playlist: criar, renomear ou excluir uma playlist no app faz o mesmo com a pasta, e as músicas adicionadas vão para dentro dela. Favoritas, letras e a ordem das músicas também ficam iguais em todos os aparelhos
 - Atualiza sozinho quando uma versão nova é publicada
 
 ## Sincronizar com o Dropbox
 
 1. No app, toque em **ⓘ → Conectar Dropbox** e autorize. No app instalado na Tela de Início, o Dropbox mostra um código: copie e cole no app.
-2. Coloque músicas (de preferência MP3) em **Dropbox › Aplicativos › Just Listening Thiago**. Subpastas viram playlists com o mesmo nome.
+2. Coloque músicas (de preferência MP3) em **Dropbox › Aplicativos › Just Listening Thiago**. **Cada subpasta é uma playlist** com o mesmo nome.
 3. O app sincroniza ao abrir, ao voltar para ele e no botão de nuvem no topo. Músicas importadas direto no aparelho também são enviadas para o Dropbox (dá para desligar no ⓘ).
 
-Excluir uma música no app não apaga a cópia no Dropbox, e ela não é baixada de novo.
+**Playlists = pastas.** Com o Dropbox conectado:
+
+| No app | No Dropbox |
+| --- | --- |
+| Criar playlist | Cria a subpasta |
+| Adicionar música | Move a música para a pasta (ou copia, se ela já está em outra playlist) |
+| Tirar música da playlist | Apaga a cópia; se era a única, volta para a pasta principal |
+| Renomear / excluir playlist | Renomeia / exclui a pasta (as músicas que só estavam nela voltam para a pasta principal) |
+
+A mesma música em várias pastas aparece **uma vez só** no app (o app reconhece pela "impressão digital" do arquivo). O que é apagado no Dropbox vai para a lixeira dele (recuperável por 30 dias). Playlists criadas antes desta versão são transformadas em pastas automaticamente, juntando as que tinham o mesmo nome.
+
+Excluir uma música no app não apaga o arquivo no Dropbox, e ela não é baixada de novo. Editar playlists com o Dropbox conectado precisa de internet.
 
 Precisa de uma conta do Dropbox (o plano grátis tem 2 GB, cerca de 300 músicas em MP3). Cada pessoa usa a própria conta. A integração está liberada para até 500 contas.
 
@@ -93,13 +104,14 @@ Depois abra <http://localhost:5173>.
 
 - **Fade-out no iPhone:** o iOS não permite que apps da web mudem o volume. No iPhone, o timer pausa a música no horário certo, mas sem diminuir o volume aos poucos. No Android funciona normalmente.
 - **Troca de faixa:** para não ficar sem som com a tela bloqueada no iPhone, a próxima música começa um instante antes do fim da atual. Isso pode cortar até ~1 segundo do final de cada música.
-- **Dropbox:** excluir uma música no app não apaga o arquivo no Dropbox. Playlists, favoritas e letras ficam no arquivo `.just-listening/biblioteca.json` da pasta do app; se o mesmo item for mudado em dois aparelhos, vale a mudança mais recente. No app instalado, a conexão usa um código de copiar e colar.
+- **Dropbox:** excluir uma música no app não apaga o arquivo no Dropbox. A mesma música em duas playlists ocupa espaço duas vezes no Dropbox (uma cópia por pasta). Ordem das músicas, capas das playlists, favoritas e letras ficam no arquivo `.just-listening/biblioteca.json`; se o mesmo item for mudado em dois aparelhos, vale a mudança mais recente. No app instalado, a conexão usa um código de copiar e colar.
 - **Espaço:** as músicas ocupam espaço do aparelho. O app pede ao sistema para não apagar os dados automaticamente; veja o espaço usado no botão ⓘ. O plano grátis do Dropbox tem 2 GB (~300 músicas em MP3).
 - **Formatos:** o que toca depende do aparelho. MP3, M4A/AAC e WAV tocam em todos.
 - **Vídeos:** MP4 e MOV (câmera, WhatsApp, YouTube Studio, gravações de tela). WebM ainda não é suportado. Use só vídeos que você tem direito de usar.
 
 ## Histórico de versões
 
+- **1.5.0:** com o Dropbox, as pastas passam a ser as playlists (criar/renomear/excluir/adicionar mexe na pasta); fim das playlists duplicadas; músicas repetidas unificadas
 - **1.4.0:** importar vídeos MP4/MOV e guardar só o áudio (sem perda de qualidade)
 - **1.3.0:** Modo Dormir, timer que espera a música terminar, Favoritas, letras, capa da playlist e sincronização de playlists/favoritas/letras entre aparelhos
 - **1.2.0:** ordenar (Recentes, A–Z, Z–A), busca, abre nas Playlists com atalho "Todas as músicas"

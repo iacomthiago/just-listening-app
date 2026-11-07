@@ -132,6 +132,62 @@ export async function listFiles() {
   return out.filter((e) => e['.tag'] === 'file');
 }
 
+// Pastas e arquivos (com content_hash) a partir de "root" (vazio = pasta do app).
+export async function listEntries(root = '') {
+  let res;
+  try {
+    res = await (await rpc('files/list_folder', { path: root, recursive: true, include_deleted: false, limit: 2000 })).json();
+  } catch (e) {
+    if (root && e.status === 409 && /not_found/.test(e.body || '')) return [];
+    throw e;
+  }
+  const out = [...res.entries];
+  while (res.has_more) {
+    res = await (await rpc('files/list_folder/continue', { cursor: res.cursor })).json();
+    out.push(...res.entries);
+  }
+  return out;
+}
+
+const metaOf = async (res) => (await res.json()).metadata;
+export async function createFolder(path) {
+  try {
+    return await metaOf(await rpc('files/create_folder_v2', { path, autorename: false }));
+  } catch (e) {
+    if (e.status === 409 && /conflict/.test(e.body || '')) return null; // já existe
+    throw e;
+  }
+}
+export async function move(from, to) {
+  return metaOf(await rpc('files/move_v2', { from_path: from, to_path: to, autorename: true }));
+}
+export async function copy(from, to) {
+  return metaOf(await rpc('files/copy_v2', { from_path: from, to_path: to, autorename: true }));
+}
+// Vai para a lixeira do Dropbox (recuperável por 30 dias).
+export async function remove(path) {
+  try {
+    return await metaOf(await rpc('files/delete_v2', { path }));
+  } catch (e) {
+    if (e.status === 409 && /not_found/.test(e.body || '')) return null;
+    throw e;
+  }
+}
+
+// "Impressão digital" do Dropbox: SHA-256 de cada bloco de 4 MB, e SHA-256 do resultado.
+export async function contentHash(buffer) {
+  const BLOCK = 4 * 1024 * 1024;
+  const parts = [];
+  for (let o = 0; o < buffer.byteLength || (o === 0 && parts.length === 0); o += BLOCK) {
+    parts.push(new Uint8Array(await crypto.subtle.digest('SHA-256', buffer.slice(o, Math.min(o + BLOCK, buffer.byteLength)))));
+    if (buffer.byteLength === 0) break;
+  }
+  const all = new Uint8Array(parts.length * 32);
+  parts.forEach((p, i) => all.set(p, i * 32));
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', all));
+  return [...h].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export async function download(id) {
   const res = await call('https://content.dropboxapi.com/2/files/download', { arg: { path: id } });
   return res.arrayBuffer();
